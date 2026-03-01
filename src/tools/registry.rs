@@ -22,7 +22,6 @@ use crate::tools::builtin::{
     TimeTool, ToolActivateTool, ToolAuthTool, ToolInstallTool, ToolListTool, ToolRemoveTool,
     ToolSearchTool, ToolUpgradeTool, WriteFileTool,
 };
-use crate::tools::rate_limiter::RateLimiter;
 use crate::tools::executor::ToolExecutor;
 use crate::tools::tool::{ApprovalRequirement, Tool, ToolDomain};
 use crate::tools::wasm::{
