@@ -9,7 +9,8 @@
           "path_prefix": "/",
           "methods": [
             "GET",
-            "POST"
+            "POST",
+            "PUT"
           ]
         }
       ],

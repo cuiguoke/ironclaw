@@ -93,6 +93,21 @@ enum GitHubAction {
         repo: String,
         issue_number: u32,
     },
+    #[serde(rename = "list_issue_comments")]
+    ListIssueComments {
+        owner: String,
+        repo: String,
+        issue_number: u32,
+        page: Option<u32>,
+        limit: Option<u32>,
+    },
+    #[serde(rename = "create_issue_comment")]
+    CreateIssueComment {
+        owner: String,
+        repo: String,
+        issue_number: u32,
+        body: String,
+    },
     #[serde(rename = "list_pull_requests")]
     ListPullRequests {
         owner: String,
@@ -100,6 +115,16 @@ enum GitHubAction {
         state: Option<String>,
         page: Option<u32>,
         limit: Option<u32>,
+    },
+    #[serde(rename = "create_pull_request")]
+    CreatePullRequest {
+        owner: String,
+        repo: String,
+        title: String,
+        head: String,
+        base: String,
+        body: Option<String>,
+        draft: Option<bool>,
     },
     #[serde(rename = "get_pull_request")]
     GetPullRequest {
@@ -120,6 +145,44 @@ enum GitHubAction {
         pr_number: u32,
         body: String,
         event: String,
+    },
+    #[serde(rename = "list_pull_request_comments")]
+    ListPullRequestComments {
+        owner: String,
+        repo: String,
+        pr_number: u32,
+        page: Option<u32>,
+        limit: Option<u32>,
+    },
+    #[serde(rename = "reply_pull_request_comment")]
+    ReplyPullRequestComment {
+        owner: String,
+        repo: String,
+        comment_id: u32,
+        body: String,
+    },
+    #[serde(rename = "get_pull_request_reviews")]
+    GetPullRequestReviews {
+        owner: String,
+        repo: String,
+        pr_number: u32,
+        page: Option<u32>,
+        limit: Option<u32>,
+    },
+    #[serde(rename = "get_combined_status")]
+    GetCombinedStatus {
+        owner: String,
+        repo: String,
+        r#ref: String,
+    },
+    #[serde(rename = "merge_pull_request")]
+    MergePullRequest {
+        owner: String,
+        repo: String,
+        pr_number: u32,
+        commit_title: Option<String>,
+        commit_message: Option<String>,
+        merge_method: Option<String>,
     },
     #[serde(rename = "list_repos")]
     ListRepos {
@@ -208,6 +271,19 @@ fn execute_inner(params: &str) -> Result<String, String> {
             repo,
             issue_number,
         } => get_issue(&owner, &repo, issue_number),
+        GitHubAction::ListIssueComments {
+            owner,
+            repo,
+            issue_number,
+            page,
+            limit,
+        } => list_issue_comments(&owner, &repo, issue_number, page, limit),
+        GitHubAction::CreateIssueComment {
+            owner,
+            repo,
+            issue_number,
+            body,
+        } => create_issue_comment(&owner, &repo, issue_number, &body),
         GitHubAction::ListPullRequests {
             owner,
             repo,
@@ -215,6 +291,23 @@ fn execute_inner(params: &str) -> Result<String, String> {
             page,
             limit,
         } => list_pull_requests(&owner, &repo, state.as_deref(), page, limit),
+        GitHubAction::CreatePullRequest {
+            owner,
+            repo,
+            title,
+            head,
+            base,
+            body,
+            draft,
+        } => create_pull_request(
+            &owner,
+            &repo,
+            &title,
+            &head,
+            &base,
+            body.as_deref(),
+            draft.unwrap_or(false),
+        ),
         GitHubAction::GetPullRequest {
             owner,
             repo,
@@ -232,6 +325,44 @@ fn execute_inner(params: &str) -> Result<String, String> {
             body,
             event,
         } => create_pr_review(&owner, &repo, pr_number, &body, &event),
+        GitHubAction::ListPullRequestComments {
+            owner,
+            repo,
+            pr_number,
+            page,
+            limit,
+        } => list_pull_request_comments(&owner, &repo, pr_number, page, limit),
+        GitHubAction::ReplyPullRequestComment {
+            owner,
+            repo,
+            comment_id,
+            body,
+        } => reply_pull_request_comment(&owner, &repo, comment_id, &body),
+        GitHubAction::GetPullRequestReviews {
+            owner,
+            repo,
+            pr_number,
+            page,
+            limit,
+        } => get_pull_request_reviews(&owner, &repo, pr_number, page, limit),
+        GitHubAction::GetCombinedStatus { owner, repo, r#ref } => {
+            get_combined_status(&owner, &repo, &r#ref)
+        }
+        GitHubAction::MergePullRequest {
+            owner,
+            repo,
+            pr_number,
+            commit_title,
+            commit_message,
+            merge_method,
+        } => merge_pull_request(
+            &owner,
+            &repo,
+            pr_number,
+            commit_title.as_deref(),
+            commit_message.as_deref(),
+            merge_method.as_deref(),
+        ),
         GitHubAction::ListRepos {
             username,
             page,
@@ -451,6 +582,49 @@ fn get_issue(owner: &str, repo: &str, issue_number: u32) -> Result<String, Strin
     )
 }
 
+fn list_issue_comments(
+    owner: &str,
+    repo: &str,
+    issue_number: u32,
+    page: Option<u32>,
+    limit: Option<u32>,
+) -> Result<String, String> {
+    if !validate_path_segment(owner) || !validate_path_segment(repo) {
+        return Err("Invalid owner or repo name".into());
+    }
+    let encoded_owner = url_encode_path(owner);
+    let encoded_repo = url_encode_path(repo);
+    let limit = limit.unwrap_or(30).min(100);
+    let mut path = format!(
+        "/repos/{}/{}/issues/{}/comments?per_page={}",
+        encoded_owner, encoded_repo, issue_number, limit
+    );
+    if let Some(p) = page {
+        path.push_str(&format!("&page={}", p));
+    }
+    github_request("GET", &path, None)
+}
+
+fn create_issue_comment(
+    owner: &str,
+    repo: &str,
+    issue_number: u32,
+    body: &str,
+) -> Result<String, String> {
+    if !validate_path_segment(owner) || !validate_path_segment(repo) {
+        return Err("Invalid owner or repo name".into());
+    }
+    validate_input_length(body, "body")?;
+    let encoded_owner = url_encode_path(owner);
+    let encoded_repo = url_encode_path(repo);
+    let path = format!(
+        "/repos/{}/{}/issues/{}/comments",
+        encoded_owner, encoded_repo, issue_number
+    );
+    let req_body = serde_json::json!({ "body": body });
+    github_request("POST", &path, Some(req_body.to_string()))
+}
+
 fn list_pull_requests(
     owner: &str,
     repo: &str,
@@ -476,6 +650,40 @@ fn list_pull_requests(
     }
 
     github_request("GET", &path, None)
+}
+
+fn create_pull_request(
+    owner: &str,
+    repo: &str,
+    title: &str,
+    head: &str,
+    base: &str,
+    body: Option<&str>,
+    draft: bool,
+) -> Result<String, String> {
+    if !validate_path_segment(owner) || !validate_path_segment(repo) {
+        return Err("Invalid owner or repo name".into());
+    }
+    validate_input_length(title, "title")?;
+    validate_input_length(head, "head")?;
+    validate_input_length(base, "base")?;
+    if let Some(b) = body {
+        validate_input_length(b, "body")?;
+    }
+
+    let encoded_owner = url_encode_path(owner);
+    let encoded_repo = url_encode_path(repo);
+    let path = format!("/repos/{}/{}/pulls", encoded_owner, encoded_repo);
+    let mut req_body = serde_json::json!({
+        "title": title,
+        "head": head,
+        "base": base,
+        "draft": draft,
+    });
+    if let Some(body) = body {
+        req_body["body"] = serde_json::json!(body);
+    }
+    github_request("POST", &path, Some(req_body.to_string()))
 }
 
 fn get_pull_request(owner: &str, repo: &str, pr_number: u32) -> Result<String, String> {
@@ -541,6 +749,132 @@ fn create_pr_review(
         "event": event,
     });
     github_request("POST", &path, Some(req_body.to_string()))
+}
+
+fn list_pull_request_comments(
+    owner: &str,
+    repo: &str,
+    pr_number: u32,
+    page: Option<u32>,
+    limit: Option<u32>,
+) -> Result<String, String> {
+    if !validate_path_segment(owner) || !validate_path_segment(repo) {
+        return Err("Invalid owner or repo name".into());
+    }
+    let encoded_owner = url_encode_path(owner);
+    let encoded_repo = url_encode_path(repo);
+    let limit = limit.unwrap_or(30).min(100);
+    let mut path = format!(
+        "/repos/{}/{}/pulls/{}/comments?per_page={}",
+        encoded_owner, encoded_repo, pr_number, limit
+    );
+    if let Some(p) = page {
+        path.push_str(&format!("&page={}", p));
+    }
+    github_request("GET", &path, None)
+}
+
+fn reply_pull_request_comment(
+    owner: &str,
+    repo: &str,
+    comment_id: u32,
+    body: &str,
+) -> Result<String, String> {
+    if !validate_path_segment(owner) || !validate_path_segment(repo) {
+        return Err("Invalid owner or repo name".into());
+    }
+    validate_input_length(body, "body")?;
+    let encoded_owner = url_encode_path(owner);
+    let encoded_repo = url_encode_path(repo);
+    let path = format!(
+        "/repos/{}/{}/pulls/comments/{}/replies",
+        encoded_owner, encoded_repo, comment_id
+    );
+    let req_body = serde_json::json!({ "body": body });
+    github_request("POST", &path, Some(req_body.to_string()))
+}
+
+fn get_pull_request_reviews(
+    owner: &str,
+    repo: &str,
+    pr_number: u32,
+    page: Option<u32>,
+    limit: Option<u32>,
+) -> Result<String, String> {
+    if !validate_path_segment(owner) || !validate_path_segment(repo) {
+        return Err("Invalid owner or repo name".into());
+    }
+    let encoded_owner = url_encode_path(owner);
+    let encoded_repo = url_encode_path(repo);
+    let limit = limit.unwrap_or(30).min(100);
+    let mut path = format!(
+        "/repos/{}/{}/pulls/{}/reviews?per_page={}",
+        encoded_owner, encoded_repo, pr_number, limit
+    );
+    if let Some(p) = page {
+        path.push_str(&format!("&page={}", p));
+    }
+    github_request("GET", &path, None)
+}
+
+fn get_combined_status(owner: &str, repo: &str, r#ref: &str) -> Result<String, String> {
+    if !validate_path_segment(owner) || !validate_path_segment(repo) {
+        return Err("Invalid owner or repo name".into());
+    }
+    validate_input_length(r#ref, "ref")?;
+    let encoded_owner = url_encode_path(owner);
+    let encoded_repo = url_encode_path(repo);
+    let encoded_ref = url_encode_path(r#ref);
+    let path = format!(
+        "/repos/{}/{}/commits/{}/status",
+        encoded_owner, encoded_repo, encoded_ref
+    );
+    github_request("GET", &path, None)
+}
+
+fn merge_pull_request(
+    owner: &str,
+    repo: &str,
+    pr_number: u32,
+    commit_title: Option<&str>,
+    commit_message: Option<&str>,
+    merge_method: Option<&str>,
+) -> Result<String, String> {
+    if !validate_path_segment(owner) || !validate_path_segment(repo) {
+        return Err("Invalid owner or repo name".into());
+    }
+    if let Some(v) = commit_title {
+        validate_input_length(v, "commit_title")?;
+    }
+    if let Some(v) = commit_message {
+        validate_input_length(v, "commit_message")?;
+    }
+    let method = merge_method.unwrap_or("merge");
+    let valid_methods = ["merge", "squash", "rebase"];
+    if !valid_methods.contains(&method) {
+        return Err(format!(
+            "Invalid merge_method: '{}'. Must be one of: {}",
+            method,
+            valid_methods.join(", ")
+        ));
+    }
+
+    let encoded_owner = url_encode_path(owner);
+    let encoded_repo = url_encode_path(repo);
+    let path = format!(
+        "/repos/{}/{}/pulls/{}/merge",
+        encoded_owner, encoded_repo, pr_number
+    );
+    let mut req_body = serde_json::json!({
+        "merge_method": method,
+    });
+    if let Some(v) = commit_title {
+        req_body["commit_title"] = serde_json::json!(v);
+    }
+    if let Some(v) = commit_message {
+        req_body["commit_message"] = serde_json::json!(v);
+    }
+    github_request("PUT", &path, Some(req_body.to_string()))
 }
 
 fn list_repos(username: &str, page: Option<u32>, limit: Option<u32>) -> Result<String, String> {
@@ -725,6 +1059,27 @@ const SCHEMA: &str = r#"{
         },
         {
             "properties": {
+                "action": { "const": "list_issue_comments" },
+                "owner": { "type": "string" },
+                "repo": { "type": "string" },
+                "issue_number": { "type": "integer" },
+                "page": { "type": "integer" },
+                "limit": { "type": "integer", "default": 30 }
+            },
+            "required": ["action", "owner", "repo", "issue_number"]
+        },
+        {
+            "properties": {
+                "action": { "const": "create_issue_comment" },
+                "owner": { "type": "string" },
+                "repo": { "type": "string" },
+                "issue_number": { "type": "integer" },
+                "body": { "type": "string" }
+            },
+            "required": ["action", "owner", "repo", "issue_number", "body"]
+        },
+        {
+            "properties": {
                 "action": { "const": "list_pull_requests" },
                 "owner": { "type": "string" },
                 "repo": { "type": "string" },
@@ -732,6 +1087,19 @@ const SCHEMA: &str = r#"{
                 "limit": { "type": "integer", "default": 30 }
             },
             "required": ["action", "owner", "repo"]
+        },
+        {
+            "properties": {
+                "action": { "const": "create_pull_request" },
+                "owner": { "type": "string" },
+                "repo": { "type": "string" },
+                "title": { "type": "string" },
+                "head": { "type": "string" },
+                "base": { "type": "string" },
+                "body": { "type": "string" },
+                "draft": { "type": "boolean", "default": false }
+            },
+            "required": ["action", "owner", "repo", "title", "head", "base"]
         },
         {
             "properties": {
@@ -761,6 +1129,59 @@ const SCHEMA: &str = r#"{
                 "event": { "type": "string", "enum": ["APPROVE", "REQUEST_CHANGES", "COMMENT"] }
             },
             "required": ["action", "owner", "repo", "pr_number", "body", "event"]
+        },
+        {
+            "properties": {
+                "action": { "const": "list_pull_request_comments" },
+                "owner": { "type": "string" },
+                "repo": { "type": "string" },
+                "pr_number": { "type": "integer" },
+                "page": { "type": "integer" },
+                "limit": { "type": "integer", "default": 30 }
+            },
+            "required": ["action", "owner", "repo", "pr_number"]
+        },
+        {
+            "properties": {
+                "action": { "const": "reply_pull_request_comment" },
+                "owner": { "type": "string" },
+                "repo": { "type": "string" },
+                "comment_id": { "type": "integer" },
+                "body": { "type": "string" }
+            },
+            "required": ["action", "owner", "repo", "comment_id", "body"]
+        },
+        {
+            "properties": {
+                "action": { "const": "get_pull_request_reviews" },
+                "owner": { "type": "string" },
+                "repo": { "type": "string" },
+                "pr_number": { "type": "integer" },
+                "page": { "type": "integer" },
+                "limit": { "type": "integer", "default": 30 }
+            },
+            "required": ["action", "owner", "repo", "pr_number"]
+        },
+        {
+            "properties": {
+                "action": { "const": "get_combined_status" },
+                "owner": { "type": "string" },
+                "repo": { "type": "string" },
+                "ref": { "type": "string" }
+            },
+            "required": ["action", "owner", "repo", "ref"]
+        },
+        {
+            "properties": {
+                "action": { "const": "merge_pull_request" },
+                "owner": { "type": "string" },
+                "repo": { "type": "string" },
+                "pr_number": { "type": "integer" },
+                "commit_title": { "type": "string" },
+                "commit_message": { "type": "string" },
+                "merge_method": { "type": "string", "enum": ["merge", "squash", "rebase"], "default": "merge" }
+            },
+            "required": ["action", "owner", "repo", "pr_number"]
         },
         {
             "properties": {
@@ -833,6 +1254,13 @@ mod tests {
         for event in valid {
             assert!(valid.contains(&event));
         }
+    }
+
+    #[test]
+    fn test_validate_merge_method() {
+        let valid = ["merge", "squash", "rebase"];
+        assert!(valid.contains(&"merge"));
+        assert!(!valid.contains(&"invalid"));
     }
 
     #[test]

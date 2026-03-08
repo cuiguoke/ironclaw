@@ -273,6 +273,12 @@ fn routine_to_info(r: &crate::agent::routine::Routine) -> RoutineInfo {
             let ch = channel.as_deref().unwrap_or("any");
             ("event".to_string(), format!("on {} /{}/", ch, pattern))
         }
+        crate::agent::routine::Trigger::SystemEvent {
+            source, event_type, ..
+        } => (
+            "system_event".to_string(),
+            format!("event: {}.{}", source, event_type),
+        ),
         crate::agent::routine::Trigger::Webhook { path, .. } => {
             let p = path.as_deref().unwrap_or("/");
             ("webhook".to_string(), format!("webhook: {}", p))

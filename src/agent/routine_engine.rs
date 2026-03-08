@@ -31,6 +31,11 @@ use crate::llm::{ChatMessage, CompletionRequest, FinishReason, LlmProvider};
 use crate::tools::ApprovalContext;
 use crate::workspace::Workspace;
 
+enum EventMatcher {
+    Message { routine: Routine, regex: Regex },
+    System { routine: Routine },
+}
+
 /// The routine execution engine.
 pub struct RoutineEngine {
     config: RoutineConfig,
@@ -41,8 +46,8 @@ pub struct RoutineEngine {
     notify_tx: mpsc::Sender<OutgoingResponse>,
     /// Currently running routine count (across all routines).
     running_count: Arc<AtomicUsize>,
-    /// Compiled event regex cache: routine_id -> compiled regex.
-    event_cache: Arc<RwLock<Vec<(Uuid, Routine, Regex)>>>,
+    /// Cached matchers for all event-driven routines.
+    event_cache: Arc<RwLock<Vec<EventMatcher>>>,
     /// Scheduler for dispatching jobs (FullJob mode).
     scheduler: Option<Arc<Scheduler>>,
 }
@@ -74,9 +79,12 @@ impl RoutineEngine {
             Ok(routines) => {
                 let mut cache = Vec::new();
                 for routine in routines {
-                    if let Trigger::Event { ref pattern, .. } = routine.trigger {
-                        match Regex::new(pattern) {
-                            Ok(re) => cache.push((routine.id, routine.clone(), re)),
+                    match &routine.trigger {
+                        Trigger::Event { pattern, .. } => match Regex::new(pattern) {
+                            Ok(re) => cache.push(EventMatcher::Message {
+                                routine: routine.clone(),
+                                regex: re,
+                            }),
                             Err(e) => {
                                 tracing::warn!(
                                     routine = %routine.name,
@@ -84,7 +92,13 @@ impl RoutineEngine {
                                     pattern, e
                                 );
                             }
+                        },
+                        Trigger::SystemEvent { .. } => {
+                            cache.push(EventMatcher::System {
+                                routine: routine.clone(),
+                            });
                         }
+                        _ => {}
                     }
                 }
                 let count = cache.len();
@@ -105,7 +119,11 @@ impl RoutineEngine {
         let cache = self.event_cache.read().await;
         let mut fired = 0;
 
-        for (_, routine, re) in cache.iter() {
+        for matcher in cache.iter() {
+            let (routine, re) = match matcher {
+                EventMatcher::Message { routine, regex } => (routine, regex),
+                EventMatcher::System { .. } => continue,
+            };
             // Channel filter
             if let Trigger::Event {
                 channel: Some(ch), ..
@@ -140,6 +158,82 @@ impl RoutineEngine {
 
             let detail = truncate(&message.content, 200);
             self.spawn_fire(routine.clone(), "event", Some(detail));
+            fired += 1;
+        }
+
+        fired
+    }
+
+    /// Emit a structured event to system-event routines.
+    ///
+    /// Returns the number of routines that were fired.
+    pub async fn emit_system_event(
+        &self,
+        source: &str,
+        event_type: &str,
+        payload: &serde_json::Value,
+        user_id: Option<&str>,
+    ) -> usize {
+        let cache = self.event_cache.read().await;
+        let mut fired = 0;
+
+        for matcher in cache.iter() {
+            let routine = match matcher {
+                EventMatcher::System { routine } => routine,
+                EventMatcher::Message { .. } => continue,
+            };
+
+            let Trigger::SystemEvent {
+                source: expected_source,
+                event_type: expected_event,
+                filters,
+            } = &routine.trigger
+            else {
+                continue;
+            };
+
+            if expected_source != source || expected_event != event_type {
+                continue;
+            }
+
+            if let Some(uid) = user_id
+                && routine.user_id != uid
+            {
+                continue;
+            }
+
+            let mut matched = true;
+            for (key, expected) in filters {
+                let Some(actual) = payload.get(key).and_then(json_value_as_string) else {
+                    matched = false;
+                    break;
+                };
+                if actual != *expected {
+                    matched = false;
+                    break;
+                }
+            }
+            if !matched {
+                continue;
+            }
+
+            if !self.check_cooldown(routine) {
+                tracing::debug!(routine = %routine.name, "Skipped: cooldown active");
+                continue;
+            }
+
+            if !self.check_concurrent(routine).await {
+                tracing::debug!(routine = %routine.name, "Skipped: max concurrent reached");
+                continue;
+            }
+
+            if self.running_count.load(Ordering::Relaxed) >= self.config.max_concurrent_routines {
+                tracing::warn!(routine = %routine.name, "Skipped: global max concurrent reached");
+                continue;
+            }
+
+            let detail = truncate(&format!("{source}:{event_type}"), 200);
+            self.spawn_fire(routine.clone(), "system_event", Some(detail));
             fired += 1;
         }
 
@@ -722,6 +816,15 @@ fn truncate(s: &str, max: usize) -> String {
     } else {
         let end = crate::util::floor_char_boundary(s, max);
         format!("{}...", &s[..end])
+    }
+}
+
+fn json_value_as_string(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
     }
 }
 

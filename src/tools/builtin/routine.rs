@@ -1,12 +1,13 @@
 //! LLM-facing tools for managing routines.
 //!
-//! Six tools let the agent manage routines conversationally:
+//! Seven tools let the agent manage routines conversationally:
 //! - `routine_create` - Create a new routine
 //! - `routine_list` - List all routines with status
 //! - `routine_update` - Modify or toggle a routine
 //! - `routine_delete` - Remove a routine
 //! - `routine_fire` - Manually trigger a routine
 //! - `routine_history` - View past runs
+//! - `event_emit` - Emit a structured event to event-driven routines
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -62,7 +63,7 @@ impl Tool for RoutineCreateTool {
                 },
                 "trigger_type": {
                     "type": "string",
-                    "enum": ["cron", "event", "webhook", "manual"],
+                    "enum": ["cron", "event", "system_event", "webhook", "manual"],
                     "description": "When the routine fires"
                 },
                 "schedule": {
@@ -76,6 +77,19 @@ impl Tool for RoutineCreateTool {
                 "event_channel": {
                     "type": "string",
                     "description": "Optional channel filter for event trigger (e.g. 'telegram')"
+                },
+                "event_source": {
+                    "type": "string",
+                    "description": "Event source for system_event triggers (e.g. 'github')"
+                },
+                "event_type": {
+                    "type": "string",
+                    "description": "Event type for system_event triggers (e.g. 'issue.opened')"
+                },
+                "event_filters": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" },
+                    "description": "Optional exact-match filters against payload fields for system_event triggers"
                 },
                 "prompt": {
                     "type": "string",
@@ -170,6 +184,38 @@ impl Tool for RoutineCreateTool {
                 Trigger::Event {
                     channel,
                     pattern: pattern.to_string(),
+                }
+            }
+            "system_event" => {
+                let source = params
+                    .get("event_source")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        ToolError::InvalidParameters(
+                            "system_event trigger requires 'event_source'".to_string(),
+                        )
+                    })?;
+                let event_type = params
+                    .get("event_type")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        ToolError::InvalidParameters(
+                            "system_event trigger requires 'event_type'".to_string(),
+                        )
+                    })?;
+                let filters = params
+                    .get("event_filters")
+                    .and_then(|v| v.as_object())
+                    .map(|obj| {
+                        obj.iter()
+                            .filter_map(|(k, v)| v.as_str().map(|s| (k.to_string(), s.to_string())))
+                            .collect::<std::collections::HashMap<String, String>>()
+                    })
+                    .unwrap_or_default();
+                Trigger::SystemEvent {
+                    source: source.to_string(),
+                    event_type: event_type.to_string(),
+                    filters,
                 }
             }
             "webhook" => Trigger::Webhook {
@@ -274,7 +320,10 @@ impl Tool for RoutineCreateTool {
             .map_err(|e| ToolError::ExecutionFailed(format!("failed to create routine: {e}")))?;
 
         // Refresh event cache if this is an event trigger
-        if routine.trigger.type_tag() == "event" {
+        if matches!(
+            routine.trigger,
+            Trigger::Event { .. } | Trigger::SystemEvent { .. }
+        ) {
             self.engine.refresh_event_cache().await;
         }
 
@@ -646,6 +695,96 @@ impl Tool for RoutineFireTool {
 
 pub struct RoutineHistoryTool {
     store: Arc<dyn Database>,
+}
+
+// ==================== event_emit ====================
+
+pub struct EventEmitTool {
+    engine: Arc<RoutineEngine>,
+}
+
+impl EventEmitTool {
+    pub fn new(engine: Arc<RoutineEngine>) -> Self {
+        Self { engine }
+    }
+}
+
+#[async_trait]
+impl Tool for EventEmitTool {
+    fn name(&self) -> &str {
+        "event_emit"
+    }
+
+    fn description(&self) -> &str {
+        "Emit a structured event to event-driven routines. \
+         Use this to trigger routines from tool workflows without waiting for cron."
+    }
+
+    fn requires_approval(&self, _params: &serde_json::Value) -> ApprovalRequirement {
+        ApprovalRequirement::Never
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": "Event source (e.g. 'github', 'workflow', 'tool')"
+                },
+                "event_type": {
+                    "type": "string",
+                    "description": "Event type (e.g. 'issue.opened', 'pr.ready')"
+                },
+                "payload": {
+                    "type": "object",
+                    "description": "Structured event payload"
+                },
+                "user_id": {
+                    "type": "string",
+                    "description": "Optional target user id; defaults to current user"
+                }
+            },
+            "required": ["source", "event_type"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+        ctx: &JobContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let start = std::time::Instant::now();
+
+        let source = require_str(&params, "source")?;
+        let event_type = require_str(&params, "event_type")?;
+        let payload = params
+            .get("payload")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        let user_id = params
+            .get("user_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or(&ctx.user_id);
+
+        let fired = self
+            .engine
+            .emit_system_event(source, event_type, &payload, Some(user_id))
+            .await;
+
+        let result = serde_json::json!({
+            "source": source,
+            "event_type": event_type,
+            "target_user_id": user_id,
+            "fired_routines": fired,
+        });
+
+        Ok(ToolOutput::success(result, start.elapsed()))
+    }
+
+    fn requires_sanitization(&self) -> bool {
+        false
+    }
 }
 
 impl RoutineHistoryTool {

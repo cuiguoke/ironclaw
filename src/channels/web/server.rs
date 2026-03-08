@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State, WebSocketUpgrade},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     middleware,
     response::{
         IntoResponse,
@@ -200,6 +200,7 @@ pub async fn start_server(
     // Public routes (no auth)
     let public = Router::new()
         .route("/api/health", get(health_handler))
+        .route("/api/webhooks/github", post(github_webhook_handler))
         .route("/oauth/callback", get(oauth_callback_handler));
 
     // Protected routes (require auth)
@@ -430,6 +431,335 @@ async fn health_handler() -> Json<HealthResponse> {
         status: "healthy",
         channel: "gateway",
     })
+}
+
+#[derive(serde::Serialize)]
+struct GithubWebhookResponse {
+    status: &'static str,
+    source: &'static str,
+    event_type: String,
+    fired_routines: usize,
+}
+
+/// PUBLIC webhook ingress for GitHub events.
+///
+/// Expects:
+/// - `X-GitHub-Event` header
+/// - JSON body payload
+/// - Optional `X-Hub-Signature-256` HMAC when secret is configured
+///
+/// Secret lookup order:
+/// 1. `GITHUB_WEBHOOK_SECRET` env var
+/// 2. Gateway setting `github.webhook_secret`
+async fn github_webhook_handler(
+    State(state): State<Arc<GatewayState>>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<(StatusCode, Json<GithubWebhookResponse>), (StatusCode, String)> {
+    let event = headers
+        .get("x-github-event")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or((
+            StatusCode::BAD_REQUEST,
+            "Missing X-GitHub-Event header".to_string(),
+        ))?;
+
+    let payload: serde_json::Value = serde_json::from_slice(&body).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Invalid JSON payload: {}", e),
+        )
+    })?;
+
+    if let Some(secret) = github_webhook_secret(&state).await {
+        let sig = headers
+            .get("x-hub-signature-256")
+            .and_then(|v| v.to_str().ok())
+            .ok_or((
+                StatusCode::UNAUTHORIZED,
+                "Missing X-Hub-Signature-256 header".to_string(),
+            ))?;
+
+        if !verify_github_signature(&secret, &body, sig) {
+            return Err((StatusCode::UNAUTHORIZED, "Invalid signature".to_string()));
+        }
+    }
+
+    let engine = {
+        let guard = state.routine_engine.read().await;
+        guard.as_ref().cloned().ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Routine engine not available".to_string(),
+        ))?
+    };
+
+    let event_type = github_event_type(event, &payload);
+    let enriched_payload = github_enriched_payload(event, &headers, &payload, &event_type);
+    let fired = engine
+        .emit_system_event(
+            "github",
+            &event_type,
+            &enriched_payload,
+            Some(&state.user_id),
+        )
+        .await;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(GithubWebhookResponse {
+            status: "accepted",
+            source: "github",
+            event_type,
+            fired_routines: fired,
+        }),
+    ))
+}
+
+async fn github_webhook_secret(state: &GatewayState) -> Option<String> {
+    if let Ok(secret) = std::env::var("GITHUB_WEBHOOK_SECRET")
+        && !secret.trim().is_empty()
+    {
+        return Some(secret);
+    }
+
+    let store = state.store.as_ref()?;
+    let value = store
+        .get_setting(&state.user_id, "github.webhook_secret")
+        .await
+        .ok()
+        .flatten()?;
+    value.as_str().map(ToString::to_string)
+}
+
+fn verify_github_signature(secret: &str, payload: &[u8], signature_header: &str) -> bool {
+    use hmac::Mac;
+    use subtle::ConstantTimeEq;
+
+    let Some(provided) = signature_header.strip_prefix("sha256=") else {
+        return false;
+    };
+
+    let mut mac = match hmac::Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    mac.update(payload);
+    let expected = hex::encode(mac.finalize().into_bytes());
+
+    expected
+        .as_bytes()
+        .ct_eq(provided.to_ascii_lowercase().as_bytes())
+        .into()
+}
+
+fn github_event_type(event: &str, payload: &serde_json::Value) -> String {
+    let base = match event {
+        "issues" => "issue",
+        "pull_request" => "pr",
+        "issue_comment" => {
+            if payload.pointer("/issue/pull_request").is_some() {
+                "pr.comment"
+            } else {
+                "issue.comment"
+            }
+        }
+        "pull_request_review" => "pr.review",
+        "pull_request_review_comment" => "pr.review_comment",
+        "pull_request_review_thread" => "pr.review_thread",
+        "check_suite" => "ci.check_suite",
+        "check_run" => "ci.check_run",
+        "status" => "ci.status",
+        other => other,
+    };
+
+    if let Some(action) = payload.get("action").and_then(|v| v.as_str())
+        && !action.is_empty()
+    {
+        return format!("{base}.{action}");
+    }
+
+    base.to_string()
+}
+
+fn github_enriched_payload(
+    raw_event: &str,
+    headers: &HeaderMap,
+    payload: &serde_json::Value,
+    event_type: &str,
+) -> serde_json::Value {
+    fn put_if_missing(
+        obj: &mut serde_json::Map<String, serde_json::Value>,
+        key: &str,
+        val: Option<serde_json::Value>,
+    ) {
+        if !obj.contains_key(key)
+            && let Some(v) = val
+        {
+            obj.insert(key.to_string(), v);
+        }
+    }
+
+    fn put_string_normalized(
+        obj: &mut serde_json::Map<String, serde_json::Value>,
+        key: &str,
+        val: Option<String>,
+    ) {
+        let should_set = match obj.get(key) {
+            None => true,
+            Some(existing) => !existing.is_string(),
+        };
+        if should_set && let Some(v) = val {
+            obj.insert(key.to_string(), serde_json::Value::String(v));
+        }
+    }
+
+    let mut obj = payload
+        .as_object()
+        .cloned()
+        .unwrap_or_else(serde_json::Map::new);
+
+    put_if_missing(
+        &mut obj,
+        "event",
+        Some(serde_json::Value::String(raw_event.to_string())),
+    );
+    put_if_missing(
+        &mut obj,
+        "event_type",
+        Some(serde_json::Value::String(event_type.to_string())),
+    );
+    put_if_missing(
+        &mut obj,
+        "delivery_id",
+        headers
+            .get("x-github-delivery")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| serde_json::Value::String(s.to_string())),
+    );
+    put_if_missing(
+        &mut obj,
+        "action",
+        payload
+            .get("action")
+            .and_then(|v| v.as_str())
+            .map(|s| serde_json::Value::String(s.to_string())),
+    );
+    put_string_normalized(
+        &mut obj,
+        "repository",
+        payload
+            .pointer("/repository/full_name")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+    );
+    put_if_missing(
+        &mut obj,
+        "repository_owner",
+        payload
+            .pointer("/repository/owner/login")
+            .and_then(|v| v.as_str())
+            .map(|s| serde_json::Value::String(s.to_string())),
+    );
+    put_string_normalized(
+        &mut obj,
+        "sender",
+        payload
+            .pointer("/sender/login")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+    );
+    put_if_missing(
+        &mut obj,
+        "issue_number",
+        payload.pointer("/issue/number").cloned(),
+    );
+    put_if_missing(
+        &mut obj,
+        "pr_number",
+        payload.pointer("/pull_request/number").cloned(),
+    );
+    put_if_missing(
+        &mut obj,
+        "comment_author",
+        payload
+            .pointer("/comment/user/login")
+            .and_then(|v| v.as_str())
+            .map(|s| serde_json::Value::String(s.to_string())),
+    );
+    put_if_missing(
+        &mut obj,
+        "comment_body",
+        payload
+            .pointer("/comment/body")
+            .and_then(|v| v.as_str())
+            .map(|s| serde_json::Value::String(s.to_string())),
+    );
+    put_if_missing(
+        &mut obj,
+        "review_state",
+        payload
+            .pointer("/review/state")
+            .and_then(|v| v.as_str())
+            .map(|s| serde_json::Value::String(s.to_string())),
+    );
+    put_if_missing(
+        &mut obj,
+        "pr_state",
+        payload
+            .pointer("/pull_request/state")
+            .and_then(|v| v.as_str())
+            .map(|s| serde_json::Value::String(s.to_string())),
+    );
+    put_if_missing(
+        &mut obj,
+        "pr_merged",
+        payload.pointer("/pull_request/merged").cloned(),
+    );
+    put_if_missing(
+        &mut obj,
+        "pr_draft",
+        payload.pointer("/pull_request/draft").cloned(),
+    );
+    put_if_missing(
+        &mut obj,
+        "base_branch",
+        payload
+            .pointer("/pull_request/base/ref")
+            .and_then(|v| v.as_str())
+            .map(|s| serde_json::Value::String(s.to_string())),
+    );
+    put_if_missing(
+        &mut obj,
+        "head_branch",
+        payload
+            .pointer("/pull_request/head/ref")
+            .and_then(|v| v.as_str())
+            .map(|s| serde_json::Value::String(s.to_string())),
+    );
+    put_if_missing(
+        &mut obj,
+        "ci_status",
+        payload
+            .pointer("/check_run/status")
+            .or_else(|| payload.pointer("/check_suite/status"))
+            .or_else(|| payload.pointer("/status"))
+            .and_then(|v| v.as_str())
+            .map(|s| serde_json::Value::String(s.to_string())),
+    );
+    put_if_missing(
+        &mut obj,
+        "ci_conclusion",
+        payload
+            .pointer("/check_run/conclusion")
+            .or_else(|| payload.pointer("/check_suite/conclusion"))
+            .or_else(|| payload.pointer("/state"))
+            .and_then(|v| v.as_str())
+            .map(|s| serde_json::Value::String(s.to_string())),
+    );
+
+    serde_json::Value::Object(obj)
 }
 
 /// Return an OAuth error landing page response.
@@ -2124,6 +2454,12 @@ fn routine_to_info(r: &crate::agent::routine::Routine) -> RoutineInfo {
             let ch = channel.as_deref().unwrap_or("any");
             ("event".to_string(), format!("on {} /{}/", ch, pattern))
         }
+        crate::agent::routine::Trigger::SystemEvent {
+            source, event_type, ..
+        } => (
+            "system_event".to_string(),
+            format!("event: {}.{}", source, event_type),
+        ),
         crate::agent::routine::Trigger::Webhook { path, .. } => {
             let p = path.as_deref().unwrap_or("/");
             ("webhook".to_string(), format!("webhook: {}", p))
@@ -2474,6 +2810,12 @@ mod tests {
             .with_state(state)
     }
 
+    fn test_github_webhook_router(state: Arc<GatewayState>) -> Router {
+        Router::new()
+            .route("/api/webhooks/github", post(github_webhook_handler))
+            .with_state(state)
+    }
+
     #[tokio::test]
     async fn test_oauth_callback_missing_params() {
         use axum::body::Body;
@@ -2777,6 +3119,195 @@ mod tests {
                 .await
                 .get("test_nonce")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn test_github_event_type_normalization() {
+        assert_eq!(
+            github_event_type("issues", &serde_json::json!({"action": "opened"})),
+            "issue.opened"
+        );
+        assert_eq!(
+            github_event_type(
+                "pull_request",
+                &serde_json::json!({"action": "synchronize"})
+            ),
+            "pr.synchronize"
+        );
+        assert_eq!(
+            github_event_type("push", &serde_json::json!({})),
+            "push".to_string()
+        );
+        assert_eq!(
+            github_event_type(
+                "issue_comment",
+                &serde_json::json!({
+                    "action": "created",
+                    "issue": { "pull_request": { "url": "https://api.github.com/repos/org/repo/pulls/1" } }
+                })
+            ),
+            "pr.comment.created"
+        );
+        assert_eq!(
+            github_event_type("check_run", &serde_json::json!({"action": "completed"})),
+            "ci.check_run.completed"
+        );
+    }
+
+    #[test]
+    fn test_verify_github_signature_valid_and_invalid() {
+        use hmac::Mac;
+
+        let secret = "test-secret";
+        let payload = br#"{"action":"opened"}"#;
+
+        let mut mac =
+            hmac::Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).expect("hmac key");
+        mac.update(payload);
+        let digest = hex::encode(mac.finalize().into_bytes());
+        let sig = format!("sha256={digest}");
+
+        assert!(verify_github_signature(secret, payload, &sig));
+        assert!(!verify_github_signature(secret, payload, "sha256=deadbeef"));
+        assert!(!verify_github_signature(secret, payload, "invalid-format"));
+    }
+
+    #[tokio::test]
+    async fn test_github_webhook_missing_event_header_rejected() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let state = test_gateway_state(None);
+        let app = test_github_webhook_router(state);
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/webhooks/github")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"action":"opened"}"#))
+            .expect("request");
+
+        let resp = ServiceExt::<axum::http::Request<Body>>::oneshot(app, req)
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_github_webhook_without_engine_returns_service_unavailable() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let state = test_gateway_state(None);
+        let app = test_github_webhook_router(state);
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/webhooks/github")
+            .header("content-type", "application/json")
+            .header("x-github-event", "issues")
+            .body(Body::from(r#"{"action":"opened"}"#))
+            .expect("request");
+
+        let resp = ServiceExt::<axum::http::Request<Body>>::oneshot(app, req)
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[cfg(feature = "libsql")]
+    #[tokio::test]
+    async fn test_github_webhook_accepts_without_secret_when_engine_present() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let state = test_gateway_state(None);
+
+        let (db, _tmp) = crate::testing::test_db().await;
+        let ws = Arc::new(crate::workspace::Workspace::new_with_db("test", db.clone()));
+        let llm = Arc::new(crate::testing::StubLlm::new("ok"));
+        let (notify_tx, _notify_rx) = tokio::sync::mpsc::channel(8);
+        let engine = Arc::new(crate::agent::routine_engine::RoutineEngine::new(
+            crate::config::RoutineConfig::default(),
+            db,
+            llm,
+            ws,
+            notify_tx,
+            None,
+        ));
+        *state.routine_engine.write().await = Some(engine);
+
+        let app = test_github_webhook_router(state);
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/webhooks/github")
+            .header("content-type", "application/json")
+            .header("x-github-event", "issues")
+            .body(Body::from(r#"{"action":"opened"}"#))
+            .expect("request");
+
+        let resp = ServiceExt::<axum::http::Request<Body>>::oneshot(app, req)
+            .await
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 64)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(
+            json.get("event_type").and_then(|v| v.as_str()),
+            Some("issue.opened")
+        );
+    }
+
+    #[test]
+    fn test_github_enriched_payload_extracts_common_fields() {
+        let headers = HeaderMap::new();
+        let payload = serde_json::json!({
+            "action": "created",
+            "repository": {
+                "full_name": "nearai/ironclaw",
+                "owner": { "login": "nearai" }
+            },
+            "sender": { "login": "maintainer1" },
+            "issue": { "number": 77 },
+            "comment": {
+                "body": "Please update the implementation plan",
+                "user": { "login": "maintainer1" }
+            }
+        });
+
+        let enriched =
+            github_enriched_payload("issue_comment", &headers, &payload, "issue.comment.created");
+        assert_eq!(
+            enriched.get("repository").and_then(|v| v.as_str()),
+            Some("nearai/ironclaw")
+        );
+        assert_eq!(
+            enriched.get("repository_owner").and_then(|v| v.as_str()),
+            Some("nearai")
+        );
+        assert_eq!(
+            enriched.get("sender").and_then(|v| v.as_str()),
+            Some("maintainer1")
+        );
+        assert_eq!(
+            enriched.get("issue_number").and_then(|v| v.as_i64()),
+            Some(77)
+        );
+        assert_eq!(
+            enriched.get("comment_author").and_then(|v| v.as_str()),
+            Some("maintainer1")
+        );
+        assert_eq!(
+            enriched.get("comment_body").and_then(|v| v.as_str()),
+            Some("Please update the implementation plan")
+        );
+        assert_eq!(
+            enriched.get("event_type").and_then(|v| v.as_str()),
+            Some("issue.comment.created")
         );
     }
 }

@@ -1,0 +1,42 @@
+{
+  "model_name": "test-routine-system-event-emit",
+  "expects": {
+    "tools_used": ["event_emit"],
+    "all_tools_succeeded": true,
+    "tool_results_contain": {
+      "event_emit": "fired_routines"
+    }
+  },
+  "steps": [
+    {
+      "response": {
+        "type": "tool_calls",
+        "tool_calls": [
+          {
+            "id": "call_ee_1",
+            "name": "event_emit",
+            "arguments": {
+              "source": "github",
+              "event_type": "issue.opened",
+              "payload": {
+                "repository": "nearai/ironclaw",
+                "issue_number": 123,
+                "title": "Support event-driven project workflow"
+              }
+            }
+          }
+        ],
+        "input_tokens": 90,
+        "output_tokens": 28
+      }
+    },
+    {
+      "response": {
+        "type": "text",
+        "content": "Emitted a GitHub system event successfully.",
+        "input_tokens": 140,
+        "output_tokens": 14
+      }
+    }
+  ]
+}
