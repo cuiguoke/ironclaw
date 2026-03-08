@@ -18,6 +18,7 @@ permissions:
   contents: write
   issues: write                    # Claude review creates issues for critical findings
   pull-requests: write             # Auto-promote creates + merges PR to main
+  id-token: write                  # Required by claude-code-action for OIDC auth
 
 concurrency:
   group: staging-ci
