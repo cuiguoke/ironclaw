@@ -37,7 +37,7 @@ jobs:
 
             2. Use a Haiku agent to summarize the PR change (use `gh pr diff`).
 
-            3. Launch 4 parallel Sonnet agents to review the change. Each agent should
+            3. Launch 4 parallel agents to review the change independently. Each agent should
                read the PR diff with `gh pr diff` and the full source files for changed
                code, then return a list of issues found:
 
