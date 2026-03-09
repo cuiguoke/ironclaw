@@ -218,6 +218,7 @@ jobs:
       needs.e2e.result == 'success' &&
       needs.create-promotion-pr.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     outputs:
       gate_passed: ${{ steps.evaluate.outputs.passed }}
     steps:
@@ -261,7 +262,7 @@ jobs:
           fi
 
           echo "Polling for Claude Code Review job on PR #${PR_NUMBER} (SHA: ${PR_SHA})..."
-          TIMEOUT=1800  # 30 minutes
+          TIMEOUT=1200  # 20 minutes
           ELAPSED=0
           INTERVAL=30
 
@@ -275,8 +276,7 @@ jobs:
             fi
 
             echo "Claude review status: ${STATUS} (${ELAPSED}s elapsed)"
-            # Sleep in 1s increments so GitHub can cancel between iterations
-            for _i in $(seq 1 "$INTERVAL"); do sleep 1; done
+            sleep "$INTERVAL"
             ELAPSED=$((ELAPSED + INTERVAL))
           done
 
