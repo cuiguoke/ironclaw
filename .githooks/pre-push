@@ -11,7 +11,7 @@ SCRIPT_DIR="$REPO_ROOT/scripts/ci"
 
 # Optional strict delta lint (env-gated)
 if [ "${IRONCLAW_STRICT_DELTA_LINT:-0}" = "1" ]; then
-    "$SCRIPT_DIR/delta_lint.sh"
+    "$SCRIPT_DIR/delta_lint.sh" "$1"
 elif [ "${IRONCLAW_STRICT_LINT:-0}" = "1" ]; then
     echo "==> clippy (strict: all warnings)"
     cargo clippy --locked --all-targets -- -D warnings

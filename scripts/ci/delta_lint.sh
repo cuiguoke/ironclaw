@@ -5,10 +5,12 @@ set -euo pipefail
 
 CLIPPY_OUT=""
 DIFF_OUT=""
+CLIPPY_STDERR=""
 
 cleanup() {
     [ -n "$CLIPPY_OUT" ] && rm -f "$CLIPPY_OUT"
     [ -n "$DIFF_OUT" ] && rm -f "$DIFF_OUT"
+    [ -n "$CLIPPY_STDERR" ] && rm -f "$CLIPPY_STDERR"
 }
 trap cleanup EXIT
 
@@ -18,18 +20,34 @@ if ! command -v python3 &>/dev/null; then
     exit 1
 fi
 
+# Accept optional remote name argument; default to dynamic detection
+REMOTE="${1:-}"
+
 # Determine the upstream base ref dynamically
 BASE_REF=""
-# Try the remote HEAD symbolic ref (works for any default branch name)
-if [ -z "$BASE_REF" ]; then
-    BASE_REF=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || true)
-fi
-# Fall back to common default branch names
-if [ -z "$BASE_REF" ] && git rev-parse --verify origin/main &>/dev/null; then
-    BASE_REF="origin/main"
-fi
-if [ -z "$BASE_REF" ] && git rev-parse --verify origin/master &>/dev/null; then
-    BASE_REF="origin/master"
+if [ -n "$REMOTE" ]; then
+    # Use the provided remote name
+    if [ -z "$BASE_REF" ]; then
+        BASE_REF=$(git symbolic-ref "refs/remotes/$REMOTE/HEAD" 2>/dev/null | sed 's|refs/remotes/||' || true)
+    fi
+    if [ -z "$BASE_REF" ] && git rev-parse --verify "$REMOTE/main" &>/dev/null; then
+        BASE_REF="$REMOTE/main"
+    fi
+    if [ -z "$BASE_REF" ] && git rev-parse --verify "$REMOTE/master" &>/dev/null; then
+        BASE_REF="$REMOTE/master"
+    fi
+else
+    # Try the remote HEAD symbolic ref (works for any default branch name)
+    if [ -z "$BASE_REF" ]; then
+        BASE_REF=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/||' || true)
+    fi
+    # Fall back to common default branch names
+    if [ -z "$BASE_REF" ] && git rev-parse --verify origin/main &>/dev/null; then
+        BASE_REF="origin/main"
+    fi
+    if [ -z "$BASE_REF" ] && git rev-parse --verify origin/master &>/dev/null; then
+        BASE_REF="origin/master"
+    fi
 fi
 if [ -z "$BASE_REF" ]; then
     echo "WARNING: could not determine upstream base branch, skipping delta lint"
@@ -37,7 +55,10 @@ if [ -z "$BASE_REF" ]; then
 fi
 
 # Compute merge base
-BASE=$(git merge-base "$BASE_REF" HEAD)
+BASE=$(git merge-base "$BASE_REF" HEAD 2>/dev/null) || {
+    echo "WARNING: git merge-base failed for $BASE_REF, skipping delta lint"
+    exit 0
+}
 
 # Find changed .rs files
 CHANGED_RS=$(git diff --name-only "$BASE" -- '*.rs' || true)
@@ -61,10 +82,8 @@ cargo clippy --locked --all-targets --message-format=json -- -D warnings > "$CLI
 if [ ! -s "$CLIPPY_OUT" ] && [ -s "$CLIPPY_STDERR" ]; then
     echo "ERROR: clippy failed to produce output. Compilation errors:"
     cat "$CLIPPY_STDERR"
-    rm -f "$CLIPPY_STDERR"
     exit 1
 fi
-rm -f "$CLIPPY_STDERR"
 
 # Get repo root for path normalization in Python
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -82,7 +101,10 @@ def parse_diff(diff_path):
     current_file = None
     with open(diff_path) as f:
         for line in f:
-            # Match +++ b/path/to/file.rs
+            # Match +++ b/path/to/file.rs or +++ /dev/null (deletion)
+            if line.startswith('+++ /dev/null'):
+                current_file = None
+                continue
             m = re.match(r'^\+\+\+ b/(.+)$', line)
             if m:
                 current_file = m.group(1)
@@ -107,13 +129,13 @@ def normalize_path(path, repo_root):
             return os.path.relpath(path, repo_root)
     return path
 
-def in_changed_range(file_path, line, changed_ranges, repo_root):
-    """Check if file:line falls within any changed range."""
+def in_changed_range(file_path, line_start, line_end, changed_ranges, repo_root):
+    """Check if file:[line_start, line_end] overlaps any changed range."""
     rel = normalize_path(file_path, repo_root)
     ranges = changed_ranges.get(rel)
     if not ranges:
         return False
-    return any(start <= line <= end for start, end in ranges)
+    return any(start <= line_end and line_start <= end for start, end in ranges)
 
 def main():
     diff_path = sys.argv[1]
@@ -143,7 +165,14 @@ def main():
             if level not in ("warning", "error"):
                 continue
 
-            # Get primary span
+            rendered = cm.get("rendered", "").strip()
+
+            # Errors are always blocking regardless of location
+            if level == "error":
+                blocking.append(rendered)
+                continue
+
+            # For warnings, only block if they overlap changed lines
             spans = cm.get("spans", [])
             primary = None
             for s in spans:
@@ -154,13 +183,14 @@ def main():
                 if spans:
                     primary = spans[0]
                 else:
+                    baseline.append(rendered)
                     continue
 
             file_name = primary.get("file_name", "")
             line_start = primary.get("line_start", 0)
-            rendered = cm.get("rendered", "").strip()
+            line_end = primary.get("line_end", line_start)
 
-            if in_changed_range(file_name, line_start, changed_ranges, repo_root):
+            if in_changed_range(file_name, line_start, line_end, changed_ranges, repo_root):
                 blocking.append(rendered)
             else:
                 baseline.append(rendered)
