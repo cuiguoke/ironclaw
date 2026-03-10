@@ -3,7 +3,8 @@ set -euo pipefail
 # Pre-push hook: runs quality gate before pushing
 # Skip with: git push --no-verify
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts/ci" && pwd)"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+SCRIPT_DIR="$REPO_ROOT/scripts/ci"
 
 # Default: baseline quality gate
 "$SCRIPT_DIR/quality_gate.sh"

@@ -12,6 +12,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Verify python3 is available (needed for diagnostic filtering)
+if ! command -v python3 &>/dev/null; then
+    echo "ERROR: python3 is required for delta lint but not found"
+    exit 1
+fi
+
 # Compute merge base
 BASE=$(git merge-base origin/main HEAD)
 
