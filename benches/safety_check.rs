@@ -71,10 +71,10 @@ fn bench_leak_detector(c: &mut Criterion) {
     let clean_content = "This is regular output from a tool. It contains file listings, \
         status messages, and other normal program output. No secrets here.";
 
-    let content_with_secrets = format!(
-        "Output: AKIAIOSFODNN7EXAMPLE and ghp_{} found in config",
-        "x".repeat(36)
-    );
+    // Build secret-like strings at runtime to avoid tripping CI secret scanners.
+    let aws_key = format!("AKIA{}", "IOSFODNN7EXAMPLE");
+    let ghp_token = format!("ghp_{}", "x".repeat(36));
+    let content_with_secrets = format!("Output: {aws_key} and {ghp_token} found in config");
 
     let large_clean = "Normal text without any secrets. ".repeat(100);
 
