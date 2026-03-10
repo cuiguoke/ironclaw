@@ -1,13 +1,15 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
+use std::sync::LazyLock;
+
 use ironclaw::safety::LeakDetector;
+
+static DETECTOR: LazyLock<LeakDetector> = LazyLock::new(LeakDetector::new);
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(s) = std::str::from_utf8(data) {
-        let detector = LeakDetector::new();
-
         // Exercise scan path
-        let result = detector.scan(s);
+        let result = DETECTOR.scan(s);
         // Invariant: if should_block, there must be matches
         if result.should_block {
             assert!(!result.matches.is_empty());
@@ -18,6 +20,6 @@ fuzz_target!(|data: &[u8]| {
         }
 
         // Exercise scan_and_clean path
-        let _ = detector.scan_and_clean(s);
+        let _ = DETECTOR.scan_and_clean(s);
     }
 });

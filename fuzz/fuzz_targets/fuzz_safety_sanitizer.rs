@@ -1,13 +1,15 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
+use std::sync::LazyLock;
+
 use ironclaw::safety::Sanitizer;
+
+static SANITIZER: LazyLock<Sanitizer> = LazyLock::new(Sanitizer::new);
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(s) = std::str::from_utf8(data) {
-        let sanitizer = Sanitizer::new();
-
         // Exercise the main sanitization path
-        let result = sanitizer.sanitize(s);
+        let result = SANITIZER.sanitize(s);
         // Verify invariant: warnings should have valid ranges
         for w in &result.warnings {
             assert!(w.location.end <= s.len());

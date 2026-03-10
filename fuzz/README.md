@@ -10,7 +10,7 @@ Fuzz testing for security-critical input parsing paths using [cargo-fuzz](https:
 | `fuzz_safety_validator` | Input validation (length, encoding, forbidden patterns) |
 | `fuzz_leak_detector` | Secret leak detection (API keys, tokens, credentials) |
 | `fuzz_tool_params` | Tool parameter and schema JSON validation |
-| `fuzz_config_env` | SafetyLayer end-to-end (sanitize, validate, policy check) |
+| `fuzz_config_env` | Combined safety primitives (sanitize, validate, leak detect) |
 
 ## Setup
 
