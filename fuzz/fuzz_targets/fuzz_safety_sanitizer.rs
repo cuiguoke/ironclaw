@@ -12,9 +12,12 @@ fuzz_target!(|data: &[u8]| {
         for w in &result.warnings {
             assert!(w.location.end <= s.len());
         }
-
-        // Exercise detection-only path
-        let warnings = sanitizer.detect(s);
-        assert_eq!(warnings.len(), result.warnings.len());
+        // Verify invariant: critical severity triggers modification
+        let has_critical = result.warnings.iter().any(|w| {
+            w.severity == ironclaw::safety::Severity::Critical
+        });
+        if has_critical {
+            assert!(result.was_modified);
+        }
     }
 });
