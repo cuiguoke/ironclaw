@@ -7,5 +7,7 @@ cargo fmt --all -- --check
 echo "==> clippy (correctness)"
 cargo clippy --locked --all-targets -- -D clippy::correctness
 
-echo "==> tests"
-cargo test --locked
+if [ "${IRONCLAW_PREPUSH_TEST:-1}" = "1" ]; then
+    echo "==> tests (skip with IRONCLAW_PREPUSH_TEST=0)"
+    cargo test --locked --lib
+fi

@@ -76,7 +76,7 @@ git diff --unified=0 "$BASE" -- '*.rs' > "$DIFF_OUT"
 # Run clippy with JSON output (stderr shows compilation progress/errors)
 CLIPPY_OUT=$(mktemp "${TMPDIR:-/tmp}/ironclaw-clippy.XXXXXX")
 CLIPPY_STDERR=$(mktemp "${TMPDIR:-/tmp}/ironclaw-clippy-err.XXXXXX")
-cargo clippy --locked --all-targets --message-format=json -- -D warnings > "$CLIPPY_OUT" 2>"$CLIPPY_STDERR" || true
+cargo clippy --locked --all-targets --message-format=json > "$CLIPPY_OUT" 2>"$CLIPPY_STDERR" || true
 
 # Show compilation errors if clippy produced no JSON output
 if [ ! -s "$CLIPPY_OUT" ] && [ -s "$CLIPPY_STDERR" ]; then
