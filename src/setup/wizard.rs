@@ -3390,11 +3390,11 @@ async fn discover_wasm_channels(dir: &std::path::Path) -> Vec<(String, ChannelCa
 /// via Cloud API key (option 4) don't get re-prompted during model selection.
 fn build_nearai_model_fetch_config() -> crate::config::LlmConfig {
     // If the user authenticated via API key (option 4), the key is stored
-    // as an env var. Pass it through so `resolve_bearer_token()` doesn't
-    // re-trigger the interactive auth prompt.
-    let api_key = std::env::var("NEARAI_API_KEY")
-        .ok()
-        .filter(|k| !k.is_empty())
+    // via set_runtime_env(). Use env_or_override() (not std::env::var) so
+    // the runtime overlay is checked — otherwise resolve_bearer_token()
+    // falls back to session-token auth and re-triggers the interactive
+    // auth prompt.
+    let api_key = crate::config::helpers::env_or_override("NEARAI_API_KEY")
         .map(secrecy::SecretString::from);
 
     // Match the same base_url logic as LlmConfig::resolve(): use cloud-api
@@ -4126,6 +4126,32 @@ mod tests {
         assert!(
             config.nearai.api_key.is_none(),
             "config should have no api_key when env var is empty"
+        );
+    }
+
+    /// Regression: API key set via set_runtime_env (interactive api_key_login
+    /// path) must be picked up by build_nearai_model_fetch_config so that
+    /// model listing doesn't fall back to session-token auth and re-trigger
+    /// the NEAR AI authentication menu.
+    #[test]
+    fn test_build_nearai_model_fetch_config_picks_up_runtime_env() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        // Ensure the real env var is unset so the only source is the overlay.
+        let _guard = EnvGuard::clear("NEARAI_API_KEY");
+
+        crate::config::helpers::set_runtime_env("NEARAI_API_KEY", "test-key-from-overlay");
+        let config = build_nearai_model_fetch_config();
+
+        // Clean up runtime overlay
+        crate::config::helpers::set_runtime_env("NEARAI_API_KEY", "");
+
+        assert!(
+            config.nearai.api_key.is_some(),
+            "config must pick up NEARAI_API_KEY from runtime overlay"
+        );
+        assert_eq!(
+            config.nearai.base_url, "https://cloud-api.near.ai",
+            "API key auth must use cloud-api base URL"
         );
     }
 }
