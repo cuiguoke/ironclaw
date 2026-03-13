@@ -228,13 +228,7 @@ impl Config {
     pub async fn from_env_with_toml(
         toml_path: Option<&std::path::Path>,
     ) -> Result<Self, ConfigError> {
-        let _ = dotenvy::dotenv();
-        crate::bootstrap::load_ironclaw_env();
-        let mut settings = Settings::load();
-
-        // Overlay TOML config file (values win over JSON settings)
-        Self::apply_toml_overlay(&mut settings, toml_path)?;
-
+        let settings = load_bootstrap_settings(toml_path)?;
         Self::build(&settings).await
     }
 
@@ -334,6 +328,17 @@ impl Config {
             relay: RelayConfig::from_env(),
         })
     }
+}
+
+pub(crate) fn load_bootstrap_settings(
+    toml_path: Option<&std::path::Path>,
+) -> Result<Settings, ConfigError> {
+    let _ = dotenvy::dotenv();
+    crate::bootstrap::load_ironclaw_env();
+
+    let mut settings = Settings::load();
+    Config::apply_toml_overlay(&mut settings, toml_path)?;
+    Ok(settings)
 }
 
 pub(crate) fn resolve_owner_id(settings: &Settings) -> Result<String, ConfigError> {

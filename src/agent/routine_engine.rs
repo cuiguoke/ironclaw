@@ -144,6 +144,11 @@ impl RoutineEngine {
                 EventMatcher::Message { routine, regex } => (routine, regex),
                 EventMatcher::System { .. } => continue,
             };
+
+            if routine.user_id != message.user_id {
+                continue;
+            }
+
             // Channel filter
             if let Trigger::Event {
                 channel: Some(ch), ..
