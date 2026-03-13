@@ -17,7 +17,7 @@ use crate::error::{Error, JobError};
 use crate::hooks::HookRegistry;
 use crate::llm::LlmProvider;
 use crate::safety::SafetyLayer;
-use crate::tools::{ApprovalContext, ToolRegistry};
+use crate::tools::{ApprovalContext, ToolRegistry, prepare_tool_params};
 use crate::worker::job::{Worker, WorkerDeps};
 
 /// Message to send to a worker.
@@ -504,6 +504,8 @@ impl Scheduler {
             }
             .into());
         }
+
+        let params = prepare_tool_params(tool.as_ref(), &params);
 
         // Scheduler-specific approval check
         let requirement = tool.requires_approval(&params);
@@ -1038,6 +1040,80 @@ mod tests {
         assert!(
             result.is_ok(),
             "hard_gate should pass with explicit permission"
+        );
+    }
+
+    struct NormalizedApprovalTool;
+
+    #[async_trait::async_trait]
+    impl Tool for NormalizedApprovalTool {
+        fn name(&self) -> &str {
+            "normalized_gate"
+        }
+        fn description(&self) -> &str {
+            "approval depends on normalized params"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "safe": { "type": "boolean" }
+                }
+            })
+        }
+        async fn execute(
+            &self,
+            _params: serde_json::Value,
+            _ctx: &JobContext,
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolOutput::text(
+                "normalized_ok",
+                std::time::Instant::now().elapsed(),
+            ))
+        }
+        fn requires_approval(&self, params: &serde_json::Value) -> ApprovalRequirement {
+            if params.get("safe").and_then(|v| v.as_bool()) == Some(true) {
+                ApprovalRequirement::Never
+            } else {
+                ApprovalRequirement::Always
+            }
+        }
+        fn requires_sanitization(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_task_normalizes_params_before_approval() {
+        let registry = ToolRegistry::new();
+        registry.register(Arc::new(NormalizedApprovalTool)).await;
+
+        let cm = Arc::new(ContextManager::new(5));
+        let job_id = cm.create_job("test", "normalized approval").await.unwrap();
+        cm.update_context(job_id, |ctx| ctx.transition_to(JobState::InProgress, None))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let safety = Arc::new(SafetyLayer::new(&SafetyConfig {
+            max_output_length: 100_000,
+            injection_check_enabled: false,
+        }));
+
+        let result = Scheduler::execute_tool_task(
+            Arc::new(registry),
+            cm,
+            safety,
+            None,
+            job_id,
+            "normalized_gate",
+            serde_json::json!({"safe": "true"}),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "stringified boolean should normalize before approval: {result:?}"
         );
     }
 }

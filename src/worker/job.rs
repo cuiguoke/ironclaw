@@ -30,7 +30,7 @@ use crate::llm::{
 use crate::safety::SafetyLayer;
 use crate::tools::execute::process_tool_result;
 use crate::tools::rate_limiter::RateLimitResult;
-use crate::tools::{ApprovalContext, ToolRegistry, redact_params};
+use crate::tools::{ApprovalContext, ToolRegistry, prepare_tool_params, redact_params};
 
 /// Shared dependencies for worker execution.
 ///
@@ -483,8 +483,10 @@ Report when the job is complete or if you encounter issues you cannot resolve."#
                     name: tool_name.to_string(),
                 })?;
 
+        let params = prepare_tool_params(tool.as_ref(), params);
+
         // Check approval: use context-aware check if available, else block all non-Never tools
-        let requirement = tool.requires_approval(params);
+        let requirement = tool.requires_approval(&params);
         let blocked =
             ApprovalContext::is_blocked_or_default(&deps.approval_context, tool_name, requirement);
         if blocked {
@@ -519,7 +521,7 @@ Report when the job is complete or if you encounter issues you cannot resolve."#
         // Run BeforeToolCall hook
         let params = {
             use crate::hooks::{HookError, HookEvent, HookOutcome};
-            let hook_params = redact_params(params, tool.sensitive_params());
+            let hook_params = redact_params(&params, tool.sensitive_params());
             let event = HookEvent::ToolCall {
                 tool_name: tool_name.to_string(),
                 parameters: hook_params,
@@ -554,6 +556,7 @@ Report when the job is complete or if you encounter issues you cannot resolve."#
                 _ => params.clone(),
             }
         };
+        let params = prepare_tool_params(tool.as_ref(), &params);
         if job_ctx.state == JobState::Cancelled {
             return Err(crate::error::ToolError::ExecutionFailed {
                 name: tool_name.to_string(),
