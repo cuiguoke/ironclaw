@@ -59,6 +59,14 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
+def _find_distinct_free_ports(count: int) -> list[int]:
+    """Return distinct OS-assigned loopback ports."""
+    ports: set[int] = set()
+    while len(ports) < count:
+        ports.add(_find_free_port())
+    return list(ports)
+
+
 @pytest.fixture(scope="session")
 def ironclaw_binary():
     """Ensure ironclaw binary is built. Returns the binary path."""
@@ -77,10 +85,11 @@ def ironclaw_binary():
 
 @pytest.fixture(scope="session")
 def server_ports():
-    """Reserve dynamic ports used by the gateway and HTTP webhook channel."""
+    """Choose distinct dynamic ports for the gateway and HTTP webhook channel."""
+    gateway_port, http_port = _find_distinct_free_ports(2)
     return {
-        "gateway": _find_free_port(),
-        "http": _find_free_port(),
+        "gateway": gateway_port,
+        "http": http_port,
     }
 
 

@@ -405,10 +405,10 @@ fn check_routines_config() -> CheckResult {
 fn check_gateway_config(settings: &Settings) -> CheckResult {
     // Use the same resolve() path as runtime so invalid env values
     // (e.g. GATEWAY_PORT=abc) are caught here too.
-    let owner_id = std::env::var("IRONCLAW_OWNER_ID")
-        .ok()
-        .or_else(|| settings.owner_id.clone())
-        .unwrap_or_else(|| "default".to_string());
+    let owner_id = match crate::config::resolve_owner_id(settings) {
+        Ok(owner_id) => owner_id,
+        Err(e) => return CheckResult::Fail(format!("config error: {e}")),
+    };
     match crate::config::ChannelsConfig::resolve(settings, &owner_id) {
         Ok(channels) => match channels.gateway {
             Some(gw) => {

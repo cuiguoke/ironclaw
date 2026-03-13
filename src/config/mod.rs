@@ -336,10 +336,11 @@ impl Config {
     }
 }
 
-fn resolve_owner_id(settings: &Settings) -> Result<String, ConfigError> {
+pub(crate) fn resolve_owner_id(settings: &Settings) -> Result<String, ConfigError> {
     Ok(self::helpers::optional_env("IRONCLAW_OWNER_ID")?
         .or_else(|| settings.owner_id.clone())
-        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "default".to_string()))
 }
 
