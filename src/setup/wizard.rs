@@ -103,13 +103,16 @@ impl SetupWizard {
         &self.owner_id
     }
 
-    fn from_bootstrap_settings(config: SetupConfig, settings: Settings) -> Self {
-        let owner_id =
-            crate::config::resolve_owner_id(&settings).unwrap_or_else(|_| "default".to_string());
+    fn fallback_with_default_owner(
+        config: SetupConfig,
+        settings: Settings,
+        error: &crate::error::ConfigError,
+    ) -> Self {
+        tracing::warn!("Falling back to default owner scope for setup wizard: {error}");
         Self {
             config,
             settings,
-            owner_id,
+            owner_id: "default".to_string(),
             session_manager: None,
             #[cfg(feature = "postgres")]
             db_pool: None,
@@ -120,16 +123,38 @@ impl SetupWizard {
         }
     }
 
+    fn from_bootstrap_settings(
+        config: SetupConfig,
+        settings: Settings,
+    ) -> Result<Self, crate::error::ConfigError> {
+        let owner_id = crate::config::resolve_owner_id(&settings)?;
+        Ok(Self {
+            config,
+            settings,
+            owner_id,
+            session_manager: None,
+            #[cfg(feature = "postgres")]
+            db_pool: None,
+            #[cfg(feature = "libsql")]
+            db_backend: None,
+            secrets_crypto: None,
+            llm_api_key: None,
+        })
+    }
+
     /// Create a new setup wizard.
     pub fn new() -> Self {
         let settings = crate::config::load_bootstrap_settings(None).unwrap_or_default();
-        Self::from_bootstrap_settings(SetupConfig::default(), settings)
+        Self::from_bootstrap_settings(SetupConfig::default(), settings.clone()).unwrap_or_else(
+            |e| Self::fallback_with_default_owner(SetupConfig::default(), settings, &e),
+        )
     }
 
     /// Create a wizard with custom configuration.
     pub fn with_config(config: SetupConfig) -> Self {
         let settings = crate::config::load_bootstrap_settings(None).unwrap_or_default();
-        Self::from_bootstrap_settings(config, settings)
+        Self::from_bootstrap_settings(config.clone(), settings.clone())
+            .unwrap_or_else(|e| Self::fallback_with_default_owner(config, settings, &e))
     }
 
     /// Create a wizard with custom configuration and bootstrap TOML overlay.
@@ -138,7 +163,7 @@ impl SetupWizard {
         toml_path: Option<&std::path::Path>,
     ) -> Result<Self, crate::error::ConfigError> {
         let settings = crate::config::load_bootstrap_settings(toml_path)?;
-        Ok(Self::from_bootstrap_settings(config, settings))
+        Self::from_bootstrap_settings(config, settings)
     }
 
     /// Set the session manager (for reusing existing auth).
@@ -3649,6 +3674,8 @@ async fn install_selected_bundled_channels(
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+    #[cfg(unix)]
+    use std::ffi::OsString;
 
     use tempfile::tempdir;
 
@@ -3694,6 +3721,30 @@ mod tests {
         let wizard = SetupWizard::try_with_config_and_toml(Default::default(), Some(&path))
             .expect("wizard should load owner_id from TOML"); // safety: test-only assertion
         assert_eq!(wizard.owner_id(), "toml-owner"); // safety: test-only assertion
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_try_with_config_and_toml_propagates_invalid_owner_env() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let original = std::env::var_os("IRONCLAW_OWNER_ID");
+        unsafe {
+            std::env::set_var("IRONCLAW_OWNER_ID", OsString::from_vec(vec![0x66, 0x80]));
+        }
+
+        let result = SetupWizard::try_with_config_and_toml(Default::default(), None);
+
+        unsafe {
+            if let Some(value) = original {
+                std::env::set_var("IRONCLAW_OWNER_ID", value);
+            } else {
+                std::env::remove_var("IRONCLAW_OWNER_ID");
+            }
+        }
+
+        assert!(result.is_err()); // safety: test-only assertion
     }
 
     #[test]
