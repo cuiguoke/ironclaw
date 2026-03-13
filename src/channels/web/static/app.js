@@ -2589,6 +2589,13 @@ function renderConfigureModal(name, secrets) {
   header.textContent = I18n.t('config.title', { name: name });
   modal.appendChild(header);
 
+  if (name === 'telegram') {
+    const hint = document.createElement('div');
+    hint.className = 'configure-hint';
+    hint.textContent = I18n.t('config.telegramOwnerHint');
+    modal.appendChild(hint);
+  }
+
   const form = document.createElement('div');
   form.className = 'configure-form';
 
@@ -2674,6 +2681,10 @@ function submitConfigureModal(name, fields) {
   const overlay = getConfigureOverlay(name) || document.querySelector('.configure-overlay');
   var btns = overlay ? overlay.querySelectorAll('.configure-actions button') : [];
   btns.forEach(function(b) { b.disabled = true; });
+  if (overlay && name === 'telegram') {
+    const submitBtn = overlay.querySelector('.configure-actions button.btn-ext.activate');
+    if (submitBtn) submitBtn.textContent = I18n.t('config.telegramOwnerWaiting');
+  }
 
   apiFetch('/api/extensions/' + encodeURIComponent(name) + '/setup', {
     method: 'POST',
@@ -2696,11 +2707,19 @@ function submitConfigureModal(name, fields) {
       } else {
         // Keep modal open so the user can correct their input and retry.
         btns.forEach(function(b) { b.disabled = false; });
+        if (name === 'telegram') {
+          const submitBtn = overlay && overlay.querySelector('.configure-actions button.btn-ext.activate');
+          if (submitBtn) submitBtn.textContent = I18n.t('config.save');
+        }
         showToast(res.message || 'Configuration failed', 'error');
       }
     })
     .catch((err) => {
       btns.forEach(function(b) { b.disabled = false; });
+      if (name === 'telegram') {
+        const submitBtn = overlay && overlay.querySelector('.configure-actions button.btn-ext.activate');
+        if (submitBtn) submitBtn.textContent = I18n.t('config.save');
+      }
       showToast('Configuration failed: ' + err.message, 'error');
     });
 }

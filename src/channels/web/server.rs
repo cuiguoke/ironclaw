@@ -1801,33 +1801,26 @@ async fn extensions_list_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let pairing_store = crate::pairing::PairingStore::new();
+    let mut owner_bound_channels = std::collections::HashSet::new();
+    for ext in &installed {
+        if ext.kind == crate::extensions::ExtensionKind::WasmChannel
+            && ext_mgr.has_wasm_channel_owner_binding(&ext.name).await
+        {
+            owner_bound_channels.insert(ext.name.clone());
+        }
+    }
     let extensions = installed
         .into_iter()
         .map(|ext| {
-            let activation_status = if ext.kind == crate::extensions::ExtensionKind::WasmChannel {
-                Some(if ext.activation_error.is_some() {
-                    "failed".to_string()
-                } else if !ext.authenticated {
-                    // No credentials configured yet.
-                    "installed".to_string()
-                } else if ext.active {
-                    // Check pairing status for active channels.
-                    let has_paired = pairing_store
-                        .read_allow_from(&ext.name)
-                        .map(|list| !list.is_empty())
-                        .unwrap_or(false);
-                    if has_paired {
-                        "active".to_string()
-                    } else {
-                        "pairing".to_string()
-                    }
-                } else {
-                    // Authenticated but not yet active.
-                    "configured".to_string()
-                })
-            } else {
-                None
-            };
+            let has_paired = pairing_store
+                .read_allow_from(&ext.name)
+                .map(|list| !list.is_empty())
+                .unwrap_or(false);
+            let activation_status = crate::channels::web::types::classify_wasm_channel_activation(
+                &ext,
+                has_paired,
+                owner_bound_channels.contains(&ext.name),
+            );
             ExtensionInfo {
                 name: ext.name,
                 display_name: ext.display_name,
@@ -2714,7 +2707,11 @@ struct GatewayStatusResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channels::web::types::{
+        ExtensionActivationStatus, classify_wasm_channel_activation,
+    };
     use crate::cli::oauth_defaults;
+    use crate::extensions::{ExtensionKind, InstalledExtension};
     use crate::testing::credentials::TEST_GATEWAY_CRYPTO_KEY;
 
     #[test]
@@ -2791,6 +2788,34 @@ mod tests {
     fn test_build_turns_from_db_messages_empty() {
         let turns = build_turns_from_db_messages(&[]);
         assert!(turns.is_empty());
+    }
+
+    #[test]
+    fn test_wasm_channel_activation_status_owner_bound_counts_as_active() {
+        let ext = InstalledExtension {
+            name: "telegram".to_string(),
+            kind: ExtensionKind::WasmChannel,
+            display_name: Some("Telegram".to_string()),
+            description: None,
+            url: None,
+            authenticated: true,
+            active: true,
+            tools: Vec::new(),
+            needs_setup: true,
+            has_auth: false,
+            installed: true,
+            activation_error: None,
+            version: None,
+        };
+
+        assert_eq!(
+            classify_wasm_channel_activation(&ext, false, true),
+            Some(ExtensionActivationStatus::Active)
+        );
+        assert_eq!(
+            classify_wasm_channel_activation(&ext, false, false),
+            Some(ExtensionActivationStatus::Pairing)
+        );
     }
 
     // --- OAuth callback handler tests ---
