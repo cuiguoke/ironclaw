@@ -2827,6 +2827,11 @@ fn status_to_wit(status: &StatusUpdate, metadata: &serde_json::Value) -> wit_cha
             },
             metadata_json,
         },
+        StatusUpdate::Suggestions { .. } => wit_channel::StatusUpdate {
+            status: wit_channel::StatusType::Status,
+            message: String::new(),
+            metadata_json,
+        },
     }
 }
 
