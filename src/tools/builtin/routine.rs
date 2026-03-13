@@ -112,6 +112,9 @@ fn routine_request_properties() -> Value {
         "filters": {
             "type": "object",
             "properties": {},
+            "additionalProperties": {
+                "type": ["string", "number", "boolean"]
+            },
             "description": "Optional exact-match filters for request.kind='system_event'. Only top-level string, number, and boolean payload fields are matched."
         }
     })
@@ -208,126 +211,140 @@ fn routine_create_schema(include_compatibility_aliases: bool) -> Value {
         "required": ["name", "prompt"]
     });
 
-    if include_compatibility_aliases
-        && let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut)
-    {
-        properties.insert(
-            "trigger_type".to_string(),
-            serde_json::json!({
-                "type": "string",
-                "enum": ["cron", "event", "system_event", "manual"],
-                "description": "Compatibility alias for request.kind. Prefer request.kind."
-            }),
-        );
-        properties.insert(
-            "schedule".to_string(),
-            serde_json::json!({
-                "type": "string",
-                "description": "Compatibility alias for request.schedule. Prefer request.schedule."
-            }),
-        );
-        properties.insert(
-            "timezone".to_string(),
-            serde_json::json!({
-                "type": "string",
-                "description": "Compatibility alias for request.timezone. Prefer request.timezone."
-            }),
-        );
-        properties.insert(
-            "event_pattern".to_string(),
-            serde_json::json!({
-                "type": "string",
-                "description": "Compatibility alias for request.pattern when request.kind='message_event'."
-            }),
-        );
-        properties.insert(
-            "event_channel".to_string(),
-            serde_json::json!({
-                "type": "string",
-                "description": "Compatibility alias for request.channel when request.kind='message_event'."
-            }),
-        );
-        properties.insert(
-            "event_source".to_string(),
-            serde_json::json!({
-                "type": "string",
-                "description": "Compatibility alias for request.source when request.kind='system_event'."
-            }),
-        );
-        properties.insert(
-            "event_type".to_string(),
-            serde_json::json!({
-                "type": "string",
-                "description": "Compatibility alias for request.event_type when request.kind='system_event'."
-            }),
-        );
-        properties.insert(
-            "event_filters".to_string(),
-            serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "description": "Compatibility alias for request.filters when request.kind='system_event'."
-            }),
-        );
-        properties.insert(
-            "action_type".to_string(),
-            serde_json::json!({
-                "type": "string",
-                "enum": ["lightweight", "full_job"],
-                "description": "Compatibility alias for execution.mode."
-            }),
-        );
-        properties.insert(
-            "context_paths".to_string(),
-            serde_json::json!({
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "Compatibility alias for execution.context_paths."
-            }),
-        );
-        properties.insert(
-            "use_tools".to_string(),
-            serde_json::json!({
-                "type": "boolean",
-                "description": "Compatibility alias for execution.use_tools."
-            }),
-        );
-        properties.insert(
-            "max_tool_rounds".to_string(),
-            serde_json::json!({
-                "type": "integer",
-                "description": "Compatibility alias for execution.max_tool_rounds."
-            }),
-        );
-        properties.insert(
-            "tool_permissions".to_string(),
-            serde_json::json!({
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "Compatibility alias for execution.tool_permissions."
-            }),
-        );
-        properties.insert(
-            "notify_channel".to_string(),
-            serde_json::json!({
-                "type": "string",
-                "description": "Compatibility alias for delivery.channel."
-            }),
-        );
-        properties.insert(
-            "notify_user".to_string(),
-            serde_json::json!({
-                "type": "string",
-                "description": "Compatibility alias for delivery.user."
-            }),
-        );
-        properties.insert(
-            "cooldown_secs".to_string(),
-            serde_json::json!({
-                "type": "integer",
-                "description": "Compatibility alias for advanced.cooldown_secs."
-            }),
-        );
+    if include_compatibility_aliases {
+        if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+            properties.insert(
+                "trigger_type".to_string(),
+                serde_json::json!({
+                    "type": "string",
+                    "enum": ["cron", "event", "system_event", "manual"],
+                    "description": "Compatibility alias for request.kind. Prefer request.kind."
+                }),
+            );
+            properties.insert(
+                "schedule".to_string(),
+                serde_json::json!({
+                    "type": "string",
+                    "description": "Compatibility alias for request.schedule. Prefer request.schedule."
+                }),
+            );
+            properties.insert(
+                "timezone".to_string(),
+                serde_json::json!({
+                    "type": "string",
+                    "description": "Compatibility alias for request.timezone. Prefer request.timezone."
+                }),
+            );
+            properties.insert(
+                "event_pattern".to_string(),
+                serde_json::json!({
+                    "type": "string",
+                    "description": "Compatibility alias for request.pattern when request.kind='message_event'."
+                }),
+            );
+            properties.insert(
+                "event_channel".to_string(),
+                serde_json::json!({
+                    "type": "string",
+                    "description": "Compatibility alias for request.channel when request.kind='message_event'."
+                }),
+            );
+            properties.insert(
+                "event_source".to_string(),
+                serde_json::json!({
+                    "type": "string",
+                    "description": "Compatibility alias for request.source when request.kind='system_event'."
+                }),
+            );
+            properties.insert(
+                "event_type".to_string(),
+                serde_json::json!({
+                    "type": "string",
+                    "description": "Compatibility alias for request.event_type when request.kind='system_event'."
+                }),
+            );
+            properties.insert(
+                "event_filters".to_string(),
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": {
+                        "type": ["string", "number", "boolean"]
+                    },
+                    "description": "Compatibility alias for request.filters when request.kind='system_event'."
+                }),
+            );
+            properties.insert(
+                "action_type".to_string(),
+                serde_json::json!({
+                    "type": "string",
+                    "enum": ["lightweight", "full_job"],
+                    "description": "Compatibility alias for execution.mode."
+                }),
+            );
+            properties.insert(
+                "context_paths".to_string(),
+                serde_json::json!({
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Compatibility alias for execution.context_paths."
+                }),
+            );
+            properties.insert(
+                "use_tools".to_string(),
+                serde_json::json!({
+                    "type": "boolean",
+                    "description": "Compatibility alias for execution.use_tools."
+                }),
+            );
+            properties.insert(
+                "max_tool_rounds".to_string(),
+                serde_json::json!({
+                    "type": "integer",
+                    "description": "Compatibility alias for execution.max_tool_rounds."
+                }),
+            );
+            properties.insert(
+                "tool_permissions".to_string(),
+                serde_json::json!({
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Compatibility alias for execution.tool_permissions."
+                }),
+            );
+            properties.insert(
+                "notify_channel".to_string(),
+                serde_json::json!({
+                    "type": "string",
+                    "description": "Compatibility alias for delivery.channel."
+                }),
+            );
+            properties.insert(
+                "notify_user".to_string(),
+                serde_json::json!({
+                    "type": "string",
+                    "description": "Compatibility alias for delivery.user."
+                }),
+            );
+            properties.insert(
+                "cooldown_secs".to_string(),
+                serde_json::json!({
+                    "type": "integer",
+                    "description": "Compatibility alias for advanced.cooldown_secs."
+                }),
+            );
+        }
+        if let Some(schema_obj) = schema.as_object_mut() {
+            schema_obj.insert(
+                "anyOf".to_string(),
+                serde_json::json!([
+                    { "required": ["request"] },
+                    { "required": ["trigger_type"] }
+                ]),
+            );
+        }
+    } else if let Some(required) = schema.get_mut("required").and_then(Value::as_array_mut) {
+        required.push(Value::String("request".to_string()));
     }
 
     schema
@@ -458,17 +475,24 @@ fn validate_timezone_param(timezone: Option<String>) -> Result<Option<String>, T
         .transpose()
 }
 
-fn parse_system_event_filters(filters: Option<Map<String, Value>>) -> HashMap<String, String> {
-    filters
-        .map(|obj| {
-            obj.iter()
-                .filter_map(|(k, v)| {
-                    crate::agent::routine::json_value_as_filter_string(v)
-                        .map(|value| (k.to_string(), value))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+fn parse_system_event_filters(
+    filters: Option<Map<String, Value>>,
+) -> Result<HashMap<String, String>, ToolError> {
+    let Some(obj) = filters else {
+        return Ok(HashMap::new());
+    };
+
+    let mut parsed = HashMap::with_capacity(obj.len());
+    for (key, value) in obj {
+        let rendered = crate::agent::routine::json_value_as_filter_string(&value).ok_or_else(|| {
+            ToolError::InvalidParameters(format!(
+                "system_event filters only support string, number, and boolean values (invalid '{key}')"
+            ))
+        })?;
+        parsed.insert(key, rendered);
+    }
+
+    Ok(parsed)
 }
 
 fn parse_routine_trigger(params: &Value) -> Result<NormalizedTriggerRequest, ToolError> {
@@ -535,7 +559,7 @@ fn parse_routine_trigger(params: &Value) -> Result<NormalizedTriggerRequest, Too
                 "request",
                 "filters",
                 &["event_filters"],
-            ));
+            ))?;
             Ok(NormalizedTriggerRequest::SystemEvent {
                 source,
                 event_type,
@@ -684,16 +708,27 @@ fn event_emit_schema(include_source_alias: bool) -> Value {
         "required": ["event_type"]
     });
 
-    if include_source_alias
-        && let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut)
-    {
-        properties.insert(
-            "source".to_string(),
-            serde_json::json!({
-                "type": "string",
-                "description": "Compatibility alias for event_source."
-            }),
-        );
+    if include_source_alias {
+        if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+            properties.insert(
+                "source".to_string(),
+                serde_json::json!({
+                    "type": "string",
+                    "description": "Compatibility alias for event_source."
+                }),
+            );
+        }
+        if let Some(schema_obj) = schema.as_object_mut() {
+            schema_obj.insert(
+                "anyOf".to_string(),
+                serde_json::json!([
+                    { "required": ["event_source"] },
+                    { "required": ["source"] }
+                ]),
+            );
+        }
+    } else if let Some(required) = schema.get_mut("required").and_then(Value::as_array_mut) {
+        required.push(Value::String("event_source".to_string()));
     }
 
     schema
@@ -929,8 +964,8 @@ impl Tool for RoutineUpdateTool {
     }
 
     fn description(&self) -> &str {
-        "Update an existing routine. Can modify trigger, prompt, schedule, or toggle enabled state. \
-         Pass the routine name and only the fields you want to change."
+        "Update an existing routine. Can change prompt, description, enabled state, or cron schedule/timezone. \
+         Pass the routine name and only the fields you want to change. This does not convert trigger types."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -1370,6 +1405,13 @@ mod tests {
         value.expect(message) // safety: test-only assertion in #[cfg(test)] module
     }
 
+    fn expect_err<T: std::fmt::Debug, E: std::fmt::Debug>(
+        result: Result<T, E>,
+        message: &str,
+    ) -> E {
+        result.expect_err(message) // safety: test-only assertion in #[cfg(test)] module
+    }
+
     fn assert_true(condition: bool, message: &str) {
         assert!(condition, "{message}"); // safety: test-only assertion in #[cfg(test)] module
     }
@@ -1560,6 +1602,39 @@ mod tests {
     }
 
     #[test]
+    fn rejects_system_event_filters_with_nested_values() {
+        let params = serde_json::json!({
+            "name": "issue-watch",
+            "prompt": "Summarize new GitHub issues.",
+            "request": {
+                "kind": "system_event",
+                "source": "github",
+                "event_type": "issue.opened",
+                "filters": {
+                    "repository": {
+                        "owner": "nearai",
+                        "name": "ironclaw"
+                    }
+                }
+            }
+        });
+
+        let err = expect_err(
+            parse_routine_create_request(&params),
+            "reject nested system event filter values",
+        );
+        match err {
+            ToolError::InvalidParameters(message) => assert_true(
+                message.contains(
+                    "system_event filters only support string, number, and boolean values",
+                ),
+                &format!("unexpected invalid filter error: {message}"),
+            ),
+            other => panic!("expected InvalidParameters, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_legacy_flat_shape() {
         let params = serde_json::json!({
             "name": "legacy-routine",
@@ -1680,6 +1755,14 @@ mod tests {
             request.is_object(),
             "request should be present in compact schema",
         );
+        let required = expect_some(
+            schema.get("required").and_then(Value::as_array),
+            "routine_create required list",
+        );
+        assert_true(
+            required.contains(&Value::String("request".to_string())),
+            "compact parameters schema should require request",
+        );
 
         for legacy_alias in [
             "trigger_type",
@@ -1699,6 +1782,11 @@ mod tests {
     #[test]
     fn routine_create_discovery_schema_keeps_legacy_aliases() {
         let schema = routine_create_discovery_schema();
+        let any_of = expect_some(
+            schema.get("anyOf").and_then(Value::as_array),
+            "routine_create discovery anyOf",
+        );
+        assert_equal(any_of.len(), 2usize);
 
         for legacy_alias in [
             "trigger_type",
@@ -1762,6 +1850,22 @@ mod tests {
             filters_description.contains("top-level string, number, and boolean"),
             "filters description should mention supported scalar payload types",
         );
+
+        let filters_schema = nested_schema_property(&schema, "request", "filters");
+        let additional_properties = expect_some(
+            filters_schema.get("additionalProperties"),
+            "request.filters additionalProperties",
+        );
+        let allowed_types = expect_some(
+            additional_properties.get("type").and_then(Value::as_array),
+            "request.filters additionalProperties.type",
+        );
+        assert_true(
+            allowed_types.contains(&Value::String("string".to_string()))
+                && allowed_types.contains(&Value::String("number".to_string()))
+                && allowed_types.contains(&Value::String("boolean".to_string())),
+            "filters schema should constrain additionalProperties to scalar values",
+        );
     }
 
     #[test]
@@ -1820,6 +1924,14 @@ mod tests {
             schema_property(&schema, "event_source").is_object(),
             "event_emit parameters schema should expose event_source",
         );
+        let required = expect_some(
+            schema.get("required").and_then(Value::as_array),
+            "event_emit required list",
+        );
+        assert_true(
+            required.contains(&Value::String("event_source".to_string())),
+            "event_emit parameters schema should require event_source",
+        );
         assert_true(
             maybe_schema_property(&schema, "source").is_none(),
             "event_emit parameters schema should hide source alias",
@@ -1829,6 +1941,11 @@ mod tests {
     #[test]
     fn event_emit_discovery_schema_keeps_source_alias() {
         let schema = event_emit_discovery_schema();
+        let any_of = expect_some(
+            schema.get("anyOf").and_then(Value::as_array),
+            "event_emit discovery anyOf",
+        );
+        assert_equal(any_of.len(), 2usize);
         assert_true(
             schema_property(&schema, "source").is_object(),
             "event_emit discovery schema should keep source alias",
