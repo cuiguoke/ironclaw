@@ -1905,8 +1905,7 @@ mod tests {
                     "additionalProperties": true
                 }));
 
-        assert_eq!(
-            // safety: test-only assertion
+        assert_eq!( // safety: test-only assertion
             wrapper.parameters_schema(),
             serde_json::json!({
                 "type": "object",

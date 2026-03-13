@@ -1111,8 +1111,7 @@ mod tests {
         )
         .await;
 
-        assert!(
-            // safety: test-only assertion
+        assert!( // safety: test-only assertion
             result.is_ok(),
             "stringified boolean should normalize before approval: {result:?}"
         );
