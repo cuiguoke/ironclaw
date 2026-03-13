@@ -3871,6 +3871,22 @@ mark {
   background: #c33;
 }
 
+/* Images in user message bubbles */
+.message.user .message-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.message.user .message-image-thumb {
+  max-width: 240px;
+  max-height: 200px;
+  border-radius: 8px;
+  object-fit: cover;
+  display: block;
+}
+
 /* Generated Image */
 .generated-image-card {
   max-width: 512px;

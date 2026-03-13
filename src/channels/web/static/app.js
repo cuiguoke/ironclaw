@@ -438,7 +438,8 @@ function sendMessage() {
   const content = input.value.trim();
   if (!content && stagedImages.length === 0) return;
 
-  addMessage('user', content || '(images attached)');
+  const imagesToDisplay = stagedImages.slice(); // snapshot before clearing
+  addMessage('user', content, imagesToDisplay);
   input.value = '';
   autoResizeTextarea(input);
   input.focus();
@@ -541,6 +542,24 @@ document.getElementById('chat-input').addEventListener('paste', (e) => {
       const file = items[i].getAsFile();
       if (file) handleImageFiles([file]);
     }
+  }
+});
+
+document.getElementById('chat-input').addEventListener('dragover', (e) => {
+  const hasImage = Array.from(e.dataTransfer.items || []).some(
+    item => item.kind === 'file' && item.type.startsWith('image/')
+  );
+  if (hasImage) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  }
+});
+
+document.getElementById('chat-input').addEventListener('drop', (e) => {
+  const files = Array.from(e.dataTransfer.files || []).filter(f => f.type.startsWith('image/'));
+  if (files.length > 0) {
+    e.preventDefault();
+    handleImageFiles(files);
   }
 });
 
@@ -702,12 +721,28 @@ function copyCodeBlock(btn) {
   });
 }
 
-function addMessage(role, content) {
+function addMessage(role, content, images) {
   const container = document.getElementById('chat-messages');
   const div = document.createElement('div');
   div.className = 'message ' + role;
   if (role === 'user') {
-    div.textContent = content;
+    if (images && images.length > 0) {
+      const imgStrip = document.createElement('div');
+      imgStrip.className = 'message-images';
+      images.forEach(img => {
+        const thumb = document.createElement('img');
+        thumb.className = 'message-image-thumb';
+        thumb.src = img.dataUrl;
+        thumb.alt = 'Attached image';
+        imgStrip.appendChild(thumb);
+      });
+      div.appendChild(imgStrip);
+    }
+    if (content) {
+      const textDiv = document.createElement('div');
+      textDiv.textContent = content;
+      div.appendChild(textDiv);
+    }
   } else {
     div.setAttribute('data-raw', content);
     div.innerHTML = renderMarkdown(content);
