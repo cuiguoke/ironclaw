@@ -2137,11 +2137,7 @@ mod tests {
         // Should fallback to "default" and find the token
         let result = resolve_host_credentials(&caps, Some(&store), "routine_user_123", None).await;
 
-        assert!(
-            // safety: test code only
-            !result.is_empty(),
-            "Should fallback to default user and find credentials"
-        );
+        assert!(!result.is_empty(), "fallback to default"); // safety: test code only
         assert_eq!(result[0].secret_value, "global_token_value"); // safety: test code only
     }
 
@@ -2206,13 +2202,8 @@ mod tests {
         // Should prefer user_123's token over default
         let result = resolve_host_credentials(&caps, Some(&store), "user_123", None).await;
 
-        assert!(!result.is_empty(), "Should find user-specific credentials"); // safety: test code only
-        assert_eq!(
-            // safety: test code only
-            result[0].secret_value,
-            "user_specific_token",
-            "Should prefer user-specific token over default"
-        );
+        assert!(!result.is_empty(), "has user credentials"); // safety: test code only
+        assert_eq!(result[0].secret_value, "user_specific_token", "user token"); // safety: test code only
     }
 
     #[tokio::test]
@@ -2257,10 +2248,6 @@ mod tests {
         let result = resolve_host_credentials(&caps, Some(&store), "user_456", None).await;
 
         // Should return empty since credential can't be found anywhere
-        assert!(
-            // safety: test code only
-            result.is_empty(),
-            "Should return empty when credential not found in user or default"
-        );
+        assert!(result.is_empty(), "no credentials found"); // safety: test code only
     }
 }
