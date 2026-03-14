@@ -5534,24 +5534,19 @@ mod tests {
         let url = endpoint_template.replace(&format!("{{{}}}", secret_name), token);
 
         // Verify colon is preserved
-        assert_eq!(
-            // safety: test assertion
-            url,
-            "https://api.telegram.org/bot123456789:AABBccDDeeFFgg_Test-Token/getMe"
-        );
+        let expected = "https://api.telegram.org/bot123456789:AABBccDDeeFFgg_Test-Token/getMe";
+        if url != expected {
+            panic!("URL mismatch: expected {expected}, got {url}"); // safety: test assertion
+        }
 
         // Verify it does NOT contain the broken percent-encoded version
-        assert!(
-            // safety: test assertion
-            !url.contains("%3A"),
-            "Token should not contain URL-encoded colon (%3A)"
-        );
+        if url.contains("%3A") {
+            panic!("URL contains URL-encoded colon (%3A): {url}"); // safety: test assertion
+        }
 
         // Verify the URL contains the original colon
-        assert!(
-            // safety: test assertion
-            url.contains("123456789:AABBccDDeeFFgg_Test-Token"),
-            "Token should be present with colon preserved"
-        );
+        if !url.contains("123456789:AABBccDDeeFFgg_Test-Token") {
+            panic!("URL missing token: {url}"); // safety: test assertion
+        }
     }
 }
