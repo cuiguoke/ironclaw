@@ -2837,10 +2837,8 @@ impl ExtensionManager {
             let msg_lower = msg.to_ascii_lowercase();
             if msg_lower.contains("requires authentication")
                 || msg.contains("401")
-                || msg.contains("403")
                 || (msg.contains("400")
-                    && (msg_lower.contains("authorization")
-                        || msg_lower.contains("authenticate")))
+                    && (msg_lower.contains("authorization") || msg_lower.contains("authenticate")))
             {
                 ExtensionError::AuthRequired
             } else {

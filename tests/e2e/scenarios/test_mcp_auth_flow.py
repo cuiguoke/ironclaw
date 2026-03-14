@@ -242,11 +242,12 @@ async def test_mcp_400_activate_triggers_auth(ironclaw_server, mock_llm_server):
     )
     data = r.json()
 
-    # Should NOT return a raw activation error like "400 Bad Request"
-    # Instead should return auth_url or awaiting_token
-    message = data.get("message", "")
-    assert "400" not in message or "auth" in message.lower(), (
-        f"400 error should trigger auth flow, not raw error: {data}"
+    # The 400 should be treated as auth-required, returning an auth_url
+    # or awaiting_token — not a raw "400 Bad Request" activation error.
+    auth_url = data.get("auth_url")
+    awaiting_token = data.get("awaiting_token")
+    assert auth_url is not None or awaiting_token, (
+        f"400 auth error should trigger auth flow (auth_url or awaiting_token), got: {data}"
     )
 
 

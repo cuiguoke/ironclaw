@@ -302,9 +302,10 @@ impl McpClient {
                 Err(ToolError::ExternalService(ref msg))
                     if msg.contains("401")
                         || msg.contains("Unauthorized")
-                        || (msg.contains("400")
-                            && (msg.to_ascii_lowercase().contains("authorization")
-                                || msg.to_ascii_lowercase().contains("authenticate"))) =>
+                        || (msg.contains("400") && {
+                            let lower = msg.to_ascii_lowercase();
+                            lower.contains("authorization") || lower.contains("authenticate")
+                        }) =>
                 {
                     if attempt == 0
                         && let Some(ref secrets) = self.secrets
@@ -984,9 +985,7 @@ mod tests {
     // "Authorization header is badly formatted" in this case).
     #[tokio::test]
     async fn test_build_headers_skips_empty_token() {
-        use crate::secrets::{
-            CreateSecretParams, DecryptedSecret, Secret, SecretError, SecretRef,
-        };
+        use crate::secrets::{CreateSecretParams, DecryptedSecret, Secret, SecretError, SecretRef};
         use uuid::Uuid;
 
         // In-memory secrets store that returns a whitespace-only string for the token.
@@ -1000,11 +999,7 @@ mod tests {
             ) -> Result<Secret, SecretError> {
                 unimplemented!()
             }
-            async fn get(
-                &self,
-                _user_id: &str,
-                _name: &str,
-            ) -> Result<Secret, SecretError> {
+            async fn get(&self, _user_id: &str, _name: &str) -> Result<Secret, SecretError> {
                 unimplemented!()
             }
             async fn get_decrypted(
@@ -1041,8 +1036,7 @@ mod tests {
         let secrets: Arc<dyn crate::secrets::SecretsStore + Send + Sync> =
             Arc::new(EmptyTokenStore);
 
-        let client =
-            McpClient::new_authenticated(config, session_manager, secrets, "test-user");
+        let client = McpClient::new_authenticated(config, session_manager, secrets, "test-user");
 
         let headers = client.build_request_headers().await.unwrap();
         assert!(
@@ -1056,9 +1050,7 @@ mod tests {
     // before being used in the Authorization header.
     #[tokio::test]
     async fn test_build_headers_trims_token() {
-        use crate::secrets::{
-            CreateSecretParams, DecryptedSecret, Secret, SecretError, SecretRef,
-        };
+        use crate::secrets::{CreateSecretParams, DecryptedSecret, Secret, SecretError, SecretRef};
         use uuid::Uuid;
 
         struct PaddedTokenStore;
@@ -1071,11 +1063,7 @@ mod tests {
             ) -> Result<Secret, SecretError> {
                 unimplemented!()
             }
-            async fn get(
-                &self,
-                _user_id: &str,
-                _name: &str,
-            ) -> Result<Secret, SecretError> {
+            async fn get(&self, _user_id: &str, _name: &str) -> Result<Secret, SecretError> {
                 unimplemented!()
             }
             async fn get_decrypted(
@@ -1112,8 +1100,7 @@ mod tests {
         let secrets: Arc<dyn crate::secrets::SecretsStore + Send + Sync> =
             Arc::new(PaddedTokenStore);
 
-        let client =
-            McpClient::new_authenticated(config, session_manager, secrets, "test-user");
+        let client = McpClient::new_authenticated(config, session_manager, secrets, "test-user");
 
         let headers = client.build_request_headers().await.unwrap();
         assert_eq!(
