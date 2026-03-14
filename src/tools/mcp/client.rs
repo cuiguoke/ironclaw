@@ -270,7 +270,10 @@ impl McpClient {
             .keys()
             .any(|k| k.eq_ignore_ascii_case("authorization"));
         if !has_custom_auth && let Some(token) = self.get_access_token().await? {
-            headers.insert("Authorization".to_string(), format!("Bearer {}", token));
+            let trimmed = token.trim();
+            if !trimmed.is_empty() {
+                headers.insert("Authorization".to_string(), format!("Bearer {}", trimmed));
+            }
         }
         if let Some(ref session_manager) = self.session_manager
             && let Some(session_id) = session_manager.get_session_id(&self.server_name).await
@@ -297,7 +300,11 @@ impl McpClient {
             match result {
                 Ok(response) => return Ok(response),
                 Err(ToolError::ExternalService(ref msg))
-                    if msg.contains("401") || msg.contains("Unauthorized") =>
+                    if msg.contains("401")
+                        || msg.contains("Unauthorized")
+                        || (msg.contains("400")
+                            && (msg.to_ascii_lowercase().contains("authorization")
+                                || msg.to_ascii_lowercase().contains("authenticate"))) =>
                 {
                     if attempt == 0
                         && let Some(ref secrets) = self.secrets
@@ -970,5 +977,149 @@ mod tests {
         let obj = result.as_object().unwrap();
         assert_eq!(obj.len(), 1);
         assert!(obj["outer"]["inner"].is_null());
+    }
+
+    // Regression test: empty/whitespace-only tokens must not produce a
+    // malformed `Authorization: Bearer ` header (GitHub MCP returns 400
+    // "Authorization header is badly formatted" in this case).
+    #[tokio::test]
+    async fn test_build_headers_skips_empty_token() {
+        use crate::secrets::{
+            CreateSecretParams, DecryptedSecret, Secret, SecretError, SecretRef,
+        };
+        use uuid::Uuid;
+
+        // In-memory secrets store that returns a whitespace-only string for the token.
+        struct EmptyTokenStore;
+        #[async_trait]
+        impl crate::secrets::SecretsStore for EmptyTokenStore {
+            async fn create(
+                &self,
+                _user_id: &str,
+                _params: CreateSecretParams,
+            ) -> Result<Secret, SecretError> {
+                unimplemented!()
+            }
+            async fn get(
+                &self,
+                _user_id: &str,
+                _name: &str,
+            ) -> Result<Secret, SecretError> {
+                unimplemented!()
+            }
+            async fn get_decrypted(
+                &self,
+                _user_id: &str,
+                _name: &str,
+            ) -> Result<DecryptedSecret, SecretError> {
+                DecryptedSecret::from_bytes(b"   ".to_vec())
+            }
+            async fn exists(&self, _user_id: &str, _name: &str) -> Result<bool, SecretError> {
+                Ok(true)
+            }
+            async fn delete(&self, _user_id: &str, _name: &str) -> Result<bool, SecretError> {
+                Ok(true)
+            }
+            async fn list(&self, _user_id: &str) -> Result<Vec<SecretRef>, SecretError> {
+                Ok(Vec::new())
+            }
+            async fn record_usage(&self, _secret_id: Uuid) -> Result<(), SecretError> {
+                Ok(())
+            }
+            async fn is_accessible(
+                &self,
+                _user_id: &str,
+                _secret_name: &str,
+                _allowed_secrets: &[String],
+            ) -> Result<bool, SecretError> {
+                Ok(true)
+            }
+        }
+
+        let config = McpServerConfig::new("github", "https://api.githubcopilot.com/mcp/");
+        let session_manager = Arc::new(McpSessionManager::new());
+        let secrets: Arc<dyn crate::secrets::SecretsStore + Send + Sync> =
+            Arc::new(EmptyTokenStore);
+
+        let client =
+            McpClient::new_authenticated(config, session_manager, secrets, "test-user");
+
+        let headers = client.build_request_headers().await.unwrap();
+        assert!(
+            !headers.contains_key("Authorization"),
+            "Empty/whitespace token must not produce an Authorization header, got: {:?}",
+            headers.get("Authorization")
+        );
+    }
+
+    // Regression test: tokens with leading/trailing whitespace must be trimmed
+    // before being used in the Authorization header.
+    #[tokio::test]
+    async fn test_build_headers_trims_token() {
+        use crate::secrets::{
+            CreateSecretParams, DecryptedSecret, Secret, SecretError, SecretRef,
+        };
+        use uuid::Uuid;
+
+        struct PaddedTokenStore;
+        #[async_trait]
+        impl crate::secrets::SecretsStore for PaddedTokenStore {
+            async fn create(
+                &self,
+                _user_id: &str,
+                _params: CreateSecretParams,
+            ) -> Result<Secret, SecretError> {
+                unimplemented!()
+            }
+            async fn get(
+                &self,
+                _user_id: &str,
+                _name: &str,
+            ) -> Result<Secret, SecretError> {
+                unimplemented!()
+            }
+            async fn get_decrypted(
+                &self,
+                _user_id: &str,
+                _name: &str,
+            ) -> Result<DecryptedSecret, SecretError> {
+                DecryptedSecret::from_bytes(b"  gho_abc123  \n".to_vec())
+            }
+            async fn exists(&self, _user_id: &str, _name: &str) -> Result<bool, SecretError> {
+                Ok(true)
+            }
+            async fn delete(&self, _user_id: &str, _name: &str) -> Result<bool, SecretError> {
+                Ok(true)
+            }
+            async fn list(&self, _user_id: &str) -> Result<Vec<SecretRef>, SecretError> {
+                Ok(Vec::new())
+            }
+            async fn record_usage(&self, _secret_id: Uuid) -> Result<(), SecretError> {
+                Ok(())
+            }
+            async fn is_accessible(
+                &self,
+                _user_id: &str,
+                _secret_name: &str,
+                _allowed_secrets: &[String],
+            ) -> Result<bool, SecretError> {
+                Ok(true)
+            }
+        }
+
+        let config = McpServerConfig::new("github", "https://api.githubcopilot.com/mcp/");
+        let session_manager = Arc::new(McpSessionManager::new());
+        let secrets: Arc<dyn crate::secrets::SecretsStore + Send + Sync> =
+            Arc::new(PaddedTokenStore);
+
+        let client =
+            McpClient::new_authenticated(config, session_manager, secrets, "test-user");
+
+        let headers = client.build_request_headers().await.unwrap();
+        assert_eq!(
+            headers.get("Authorization").unwrap(),
+            "Bearer gho_abc123",
+            "Token must be trimmed before use in Authorization header"
+        );
     }
 }
