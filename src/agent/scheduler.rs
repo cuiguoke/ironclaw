@@ -847,13 +847,13 @@ mod tests {
         let job_id = sched
             .dispatch_job("user1", "test", "desc", None) // None metadata
             .await
-            .unwrap();
+            .unwrap(); // safety: test code
 
-        let ctx = sched.context_manager.get_context(job_id).await.unwrap();
+        let ctx = sched.context_manager.get_context(job_id).await.unwrap(); // safety: test code
         // No metadata was set, should have default empty metadata
-        assert!(ctx.metadata.is_null() || ctx.metadata == serde_json::json!({}));
+        assert!(ctx.metadata.is_null() || ctx.metadata == serde_json::json!({})); // safety: test code
         // No user tokens AND unlimited config means max_tokens stays at default
-        assert_eq!(ctx.max_tokens, 0, "unlimited config");
+        assert_eq!(ctx.max_tokens, 0, "unlimited config"); // safety: test code
     }
 
     #[test]

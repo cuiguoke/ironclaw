@@ -909,7 +909,7 @@ mod tests {
         let job_id = manager
             .create_job("Atomicity Test", "verify no race condition")
             .await
-            .unwrap();
+            .unwrap(); // safety: test code
 
         // Update and get atomically, setting metadata
         let metadata = serde_json::json!({ "priority": "high", "user_id": 42 });
@@ -919,16 +919,16 @@ mod tests {
                 ctx.max_tokens = 5000;
             })
             .await
-            .unwrap();
+            .unwrap(); // safety: test code
 
         // Verify the returned context has the exact updates we set
-        assert_eq!(returned_ctx.metadata, metadata);
-        assert_eq!(returned_ctx.max_tokens, 5000);
+        assert_eq!(returned_ctx.metadata, metadata); // safety: test code
+        assert_eq!(returned_ctx.max_tokens, 5000); // safety: test code
 
         // Verify a fresh get returns the same state
-        let fresh_ctx = manager.get_context(job_id).await.unwrap();
-        assert_eq!(fresh_ctx.metadata, metadata);
-        assert_eq!(fresh_ctx.max_tokens, 5000);
+        let fresh_ctx = manager.get_context(job_id).await.unwrap(); // safety: test code
+        assert_eq!(fresh_ctx.metadata, metadata); // safety: test code
+        assert_eq!(fresh_ctx.max_tokens, 5000); // safety: test code
     }
 
     #[tokio::test]
@@ -940,7 +940,7 @@ mod tests {
         let job_id = manager
             .create_job("Concurrent Race Test", "ensure atomicity")
             .await
-            .unwrap();
+            .unwrap(); // safety: test code
 
         let metadata = serde_json::json!({ "test": "race_condition" });
         let metadata_clone = metadata.clone();
@@ -957,12 +957,12 @@ mod tests {
 
         // The returned context should have *only* the metadata update, not any
         // concurrent state transitions that might happen during the operation.
-        let returned_ctx = returned_ctx_handle.await.unwrap().unwrap();
+        let returned_ctx = returned_ctx_handle.await.unwrap().unwrap(); // safety: test code
 
         // Verify atomicity: returned context has the metadata we set
-        assert_eq!(returned_ctx.metadata, metadata);
-        assert_eq!(returned_ctx.max_tokens, 3000);
+        assert_eq!(returned_ctx.metadata, metadata); // safety: test code
+        assert_eq!(returned_ctx.max_tokens, 3000); // safety: test code
         // And it's in the initial state (Pending), not modified by concurrent workers
-        assert_eq!(returned_ctx.state, crate::context::JobState::Pending);
+        assert_eq!(returned_ctx.state, crate::context::JobState::Pending); // safety: test code
     }
 }
