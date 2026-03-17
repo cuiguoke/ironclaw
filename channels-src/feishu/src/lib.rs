@@ -33,8 +33,8 @@ use serde::{Deserialize, Serialize};
 
 // Re-export generated types
 use exports::near::agent::channel::{
-    AgentResponse, Attachment, ChannelConfig, Guest, HttpEndpointConfig, IncomingHttpRequest,
-    OutgoingHttpResponse, PollConfig, StatusUpdate,
+    AgentResponse, ChannelConfig, Guest, HttpEndpointConfig, IncomingHttpRequest,
+    OutgoingHttpResponse, StatusUpdate,
 };
 use near::agent::channel_host::{self, EmittedMessage};
 
@@ -207,7 +207,7 @@ struct FeishuApiResponse<T> {
 }
 
 /// Tenant access token response.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct TenantAccessTokenData {
     tenant_access_token: String,
     expire: i64,
@@ -268,7 +268,7 @@ fn default_api_base() -> String {
 
 struct FeishuChannel;
 
-export_sandboxed_channel!(FeishuChannel);
+export!(FeishuChannel);
 
 impl Guest for FeishuChannel {
     fn on_start(config_json: String) -> Result<ChannelConfig, String> {
@@ -487,7 +487,7 @@ fn handle_message_event(event_data: &serde_json::Value) {
 
         if dm_policy == "pairing" {
             let sender_name = sender_id.to_string();
-            match channel_host::pairing_is_allowed("feishu", sender_id, &sender_name) {
+            match channel_host::pairing_is_allowed("feishu", sender_id, Some(&sender_name)) {
                 Ok(true) => {}
                 Ok(false) => {
                     // Upsert a pairing request.
@@ -550,7 +550,7 @@ fn handle_message_event(event_data: &serde_json::Value) {
         .map(|s| s.to_string());
 
     // Emit message to the agent.
-    channel_host::emit_message(EmittedMessage {
+    channel_host::emit_message(&EmittedMessage {
         user_id: sender_id.to_string(),
         user_name: None,
         content: text,
@@ -619,7 +619,7 @@ fn send_reply(message_id: &str, content: &str) -> Result<(), String> {
         "POST",
         &url,
         &headers.to_string(),
-        Some(&body_json),
+        Some(body_json.as_bytes()),
         Some(10_000),
     );
 
@@ -679,7 +679,7 @@ fn send_message(receive_id: &str, receive_id_type: &str, content: &str) -> Resul
         "POST",
         &url,
         &headers.to_string(),
-        Some(&body_json),
+        Some(body_json.as_bytes()),
         Some(10_000),
     );
 
@@ -763,7 +763,7 @@ fn obtain_tenant_token(api_base: &str) -> Result<String, String> {
         "POST",
         &url,
         &headers.to_string(),
-        Some(&body.to_string()),
+        Some(body.to_string().as_bytes()),
         Some(10_000),
     );
 
@@ -827,5 +827,265 @@ fn json_response(status: u16, body: serde_json::Value) -> OutgoingHttpResponse {
         })
         .to_string(),
         body: body_bytes,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // Config parsing
+    // =========================================================================
+
+    #[test]
+    fn test_config_minimal() {
+        let json = r#"{}"#;
+        let config: FeishuConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.api_base, "https://open.feishu.cn");
+        assert!(config.app_id.is_none());
+        assert!(config.app_secret.is_none());
+        assert!(config.owner_id.is_none());
+        assert!(config.dm_policy.is_none());
+    }
+
+    #[test]
+    fn test_config_full() {
+        let json = r#"{
+            "app_id": "cli_abc123",
+            "app_secret": "secret_xyz",
+            "api_base": "https://open.larksuite.com",
+            "owner_id": "ou_abc123",
+            "dm_policy": "open",
+            "allow_from": ["ou_user1", "ou_user2"]
+        }"#;
+        let config: FeishuConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.app_id.as_deref(), Some("cli_abc123"));
+        assert_eq!(config.app_secret.as_deref(), Some("secret_xyz"));
+        assert_eq!(config.api_base, "https://open.larksuite.com");
+        assert_eq!(config.owner_id.as_deref(), Some("ou_abc123"));
+        assert_eq!(config.dm_policy.as_deref(), Some("open"));
+        assert_eq!(
+            config.allow_from.as_deref(),
+            Some(["ou_user1".to_string(), "ou_user2".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn test_config_default_api_base() {
+        let json = r#"{"app_id": "cli_test"}"#;
+        let config: FeishuConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.api_base, "https://open.feishu.cn");
+    }
+
+    #[test]
+    fn test_config_null_owner_id() {
+        let json = r#"{"owner_id": null}"#;
+        let config: FeishuConfig = serde_json::from_str(json).unwrap();
+        assert!(config.owner_id.is_none());
+    }
+
+    // =========================================================================
+    // extract_text_content
+    // =========================================================================
+
+    fn make_message(message_type: &str, content: &str) -> FeishuMessage {
+        FeishuMessage {
+            message_id: "msg_001".to_string(),
+            parent_id: None,
+            root_id: None,
+            chat_id: "chat_001".to_string(),
+            chat_type: Some("p2p".to_string()),
+            message_type: message_type.to_string(),
+            content: content.to_string(),
+            mentions: None,
+        }
+    }
+
+    #[test]
+    fn test_extract_text_plain() {
+        let msg = make_message("text", r#"{"text":"hello world"}"#);
+        assert_eq!(extract_text_content(&msg), "hello world");
+    }
+
+    #[test]
+    fn test_extract_text_trims_whitespace() {
+        let msg = make_message("text", r#"{"text":"  hello  "}"#);
+        assert_eq!(extract_text_content(&msg), "hello");
+    }
+
+    #[test]
+    fn test_extract_text_empty_string() {
+        let msg = make_message("text", r#"{"text":""}"#);
+        assert_eq!(extract_text_content(&msg), "");
+    }
+
+    #[test]
+    fn test_extract_text_invalid_json_returns_empty() {
+        let msg = make_message("text", "not json at all");
+        assert_eq!(extract_text_content(&msg), "");
+    }
+
+    #[test]
+    fn test_extract_text_non_text_type_returns_empty() {
+        for msg_type in &["image", "post", "file", "audio", "sticker"] {
+            let msg = make_message(msg_type, r#"{"file_key":"abc"}"#);
+            assert_eq!(
+                extract_text_content(&msg),
+                "",
+                "expected empty for type {}",
+                msg_type
+            );
+        }
+    }
+
+    #[test]
+    fn test_extract_text_replaces_mention_keys() {
+        let mut msg = make_message("text", r#"{"text":"@_user_1 hello @_user_2"}"#);
+        msg.mentions = Some(vec![
+            FeishuMention {
+                key: "@_user_1".to_string(),
+                id: FeishuMentionId {
+                    open_id: Some("ou_abc".to_string()),
+                    user_id: None,
+                    union_id: None,
+                },
+                name: "Alice".to_string(),
+                tenant_key: None,
+            },
+            FeishuMention {
+                key: "@_user_2".to_string(),
+                id: FeishuMentionId {
+                    open_id: Some("ou_def".to_string()),
+                    user_id: None,
+                    union_id: None,
+                },
+                name: "Bob".to_string(),
+                tenant_key: None,
+            },
+        ]);
+        assert_eq!(extract_text_content(&msg), "Alice hello Bob");
+    }
+
+    #[test]
+    fn test_extract_text_no_mentions_field() {
+        // mentions is None — key placeholders are left as-is
+        let msg = make_message("text", r#"{"text":"@_user_1 hi"}"#);
+        assert_eq!(extract_text_content(&msg), "@_user_1 hi");
+    }
+
+    // =========================================================================
+    // FeishuApiResponse deserialization
+    // =========================================================================
+
+    #[test]
+    fn test_api_response_success() {
+        let json = r#"{"code":0,"msg":"success","data":{"tenant_access_token":"t-abc","expire":7200}}"#;
+        let resp: FeishuApiResponse<TenantAccessTokenData> =
+            serde_json::from_str(json).unwrap();
+        assert_eq!(resp.code, 0);
+        let data = resp.data.unwrap();
+        assert_eq!(data.tenant_access_token, "t-abc");
+        assert_eq!(data.expire, 7200);
+    }
+
+    #[test]
+    fn test_api_response_error() {
+        let json = r#"{"code":99991663,"msg":"app ticket invalid"}"#;
+        let resp: FeishuApiResponse<TenantAccessTokenData> =
+            serde_json::from_str(json).unwrap();
+        assert_eq!(resp.code, 99991663);
+        assert_eq!(resp.msg, "app ticket invalid");
+        assert!(resp.data.is_none());
+    }
+
+    // =========================================================================
+    // FeishuMessageMetadata round-trip
+    // =========================================================================
+
+    #[test]
+    fn test_metadata_roundtrip() {
+        let meta = FeishuMessageMetadata {
+            chat_id: "oc_abc".to_string(),
+            message_id: "om_xyz".to_string(),
+            chat_type: "p2p".to_string(),
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        let decoded: FeishuMessageMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.chat_id, "oc_abc");
+        assert_eq!(decoded.message_id, "om_xyz");
+        assert_eq!(decoded.chat_type, "p2p");
+    }
+
+    // =========================================================================
+    // json_response helper
+    // =========================================================================
+
+    #[test]
+    fn test_json_response_status_and_content_type() {
+        let resp = json_response(200, serde_json::json!({"ok": true}));
+        assert_eq!(resp.status, 200);
+        let headers: serde_json::Value =
+            serde_json::from_str(&resp.headers_json).unwrap();
+        assert_eq!(headers["Content-Type"], "application/json");
+    }
+
+    #[test]
+    fn test_json_response_body_roundtrip() {
+        let payload = serde_json::json!({"challenge": "abc123"});
+        let resp = json_response(200, payload.clone());
+        let decoded: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn test_json_response_error_status() {
+        let resp = json_response(400, serde_json::json!({"error": "bad request"}));
+        assert_eq!(resp.status, 400);
+        let decoded: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(decoded["error"], "bad request");
+    }
+
+    // =========================================================================
+    // FeishuEvent deserialization
+    // =========================================================================
+
+    #[test]
+    fn test_parse_url_verification_event() {
+        let json = r#"{
+            "type": "url_verification",
+            "challenge": "ajls384kdjx98XX",
+            "token": "some_token"
+        }"#;
+        let event: FeishuEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.event_type.as_deref(), Some("url_verification"));
+        assert_eq!(event.challenge.as_deref(), Some("ajls384kdjx98XX"));
+        assert!(event.header.is_none());
+    }
+
+    #[test]
+    fn test_parse_message_receive_event() {
+        let json = r#"{
+            "schema": "2.0",
+            "header": {
+                "event_id": "evt_001",
+                "event_type": "im.message.receive_v1"
+            },
+            "event": {
+                "sender": {"sender_id": {"open_id": "ou_abc"}},
+                "message": {
+                    "message_id": "om_001",
+                    "chat_id": "oc_001",
+                    "chat_type": "p2p",
+                    "message_type": "text",
+                    "content": "{\"text\":\"hello\"}"
+                }
+            }
+        }"#;
+        let event: FeishuEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.schema.as_deref(), Some("2.0"));
+        let header = event.header.unwrap();
+        assert_eq!(header.event_type, "im.message.receive_v1");
+        assert!(event.event.is_some());
     }
 }
