@@ -771,11 +771,19 @@ fn handle_polled_message(sender_id: &str, message: &FeishuMessage) {
                         "chat_id": message.chat_id,
                         "chat_type": chat_type,
                     });
-                    let _ = channel_host::pairing_upsert_request(
+                    if let Ok(result) = channel_host::pairing_upsert_request(
                         "feishu",
                         sender_id,
                         &meta.to_string(),
-                    );
+                    ) {
+                        if result.created {
+                            send_pairing_reply(
+                                &message.message_id,
+                                &message.chat_id,
+                                &result.code,
+                            );
+                        }
+                    }
                     return;
                 }
                 Err(e) => {
@@ -883,15 +891,34 @@ fn handle_message_event(event_data: &serde_json::Value) {
                         "chat_id": msg_event.message.chat_id,
                         "chat_type": chat_type,
                     });
-                    let _ = channel_host::pairing_upsert_request(
+                    match channel_host::pairing_upsert_request(
                         "feishu",
                         sender_id,
                         &meta.to_string(),
-                    );
-                    channel_host::log(
-                        channel_host::LogLevel::Info,
-                        &format!("Pairing request created for {}", sender_id),
-                    );
+                    ) {
+                        Ok(result) => {
+                            channel_host::log(
+                                channel_host::LogLevel::Info,
+                                &format!(
+                                    "Pairing request for user {} (chat {}): code {}",
+                                    sender_id, msg_event.message.chat_id, result.code
+                                ),
+                            );
+                            if result.created {
+                                send_pairing_reply(
+                                    &msg_event.message.message_id,
+                                    &msg_event.message.chat_id,
+                                    &result.code,
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            channel_host::log(
+                                channel_host::LogLevel::Error,
+                                &format!("Pairing upsert failed: {}", e),
+                            );
+                        }
+                    }
                     return;
                 }
                 Err(e) => {
@@ -971,6 +998,26 @@ fn extract_text_content(message: &FeishuMessage) -> String {
         }
         _ => String::new(),
     }
+}
+
+// ============================================================================
+// Pairing Reply
+// ============================================================================
+
+/// Send a pairing prompt to an unknown user who DM'd the bot.
+///
+/// Only called when `pairing_upsert_request` returns `created = true` so the
+/// user receives the message exactly once per new pairing request.
+fn send_pairing_reply(message_id: &str, chat_id: &str, code: &str) {
+    let text = format!(
+        "要与此机器人配对，请管理员执行：ironclaw pairing approve feishu {}",
+        code
+    );
+    // Best-effort: ignore errors (pairing reply is informational only).
+    let _ = send_reply(message_id, &text).or_else(|_| {
+        // Fallback: send as new message to the chat if reply fails.
+        send_message(chat_id, "open_id", &text)
+    });
 }
 
 // ============================================================================
