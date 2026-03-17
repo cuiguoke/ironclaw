@@ -55,7 +55,8 @@
     },
     "channel": {
       "allowed_paths": ["/webhook/feishu"],
-      "allow_polling": false,
+      "allow_polling": true,
+      "min_poll_interval_ms": 30000,
       "workspace_prefix": "channels/feishu/",
       "emit_rate_limit": {
         "messages_per_minute": 100,
@@ -73,6 +74,8 @@
     "api_base": "https://open.feishu.cn",
     "owner_id": null,
     "dm_policy": "pairing",
-    "allow_from": []
+    "allow_from": [],
+    "polling_enabled": false,
+    "poll_interval_ms": 30000
   }
 }
