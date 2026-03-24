@@ -10,19 +10,11 @@
 //! # Features
 //!
 //! - Webhook-based message receiving (Event Subscription v2.0)
-//! - Polling mode via GET /open-apis/im/v1/messages (no public URL needed)
 //! - URL verification challenge handling
 //! - Private chat (DM) support
 //! - Group chat support with @mention triggering
 //! - Tenant access token management (app_id + app_secret exchange)
 //! - Supports both Feishu (open.feishu.cn) and Lark (open.larksuite.com)
-//!
-//! # Polling mode
-//!
-//! When `polling_enabled = true` (or no tunnel_url is configured), the channel
-//! uses `GET /open-apis/im/v1/messages` to pull messages from the bot's p2p
-//! chat list. It tracks the last-seen message create_time (Unix seconds) in
-//! workspace storage and only fetches messages newer than that timestamp.
 //!
 //! # Security
 //!
@@ -42,7 +34,7 @@ use serde::{Deserialize, Serialize};
 // Re-export generated types
 use exports::near::agent::channel::{
     AgentResponse, ChannelConfig, Guest, HttpEndpointConfig, IncomingHttpRequest,
-    OutgoingHttpResponse, PollConfig, StatusUpdate,
+    OutgoingHttpResponse, StatusUpdate,
 };
 use near::agent::channel_host::{self, EmittedMessage};
 
@@ -58,10 +50,6 @@ const APP_ID_PATH: &str = "app_id";
 const APP_SECRET_PATH: &str = "app_secret";
 const TOKEN_PATH: &str = "tenant_access_token";
 const TOKEN_EXPIRY_PATH: &str = "token_expiry";
-/// Last-seen message create_time in Unix seconds (for polling dedup).
-const POLL_LAST_TIME_PATH: &str = "poll_last_time";
-/// Comma-separated set of message_ids seen in the last poll window (dedup).
-const POLL_SEEN_IDS_PATH: &str = "poll_seen_ids";
 
 // ============================================================================
 // Feishu API Types
@@ -175,7 +163,7 @@ struct FeishuMessage {
 }
 
 /// Mention in a message.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct FeishuMention {
     key: String,
     id: FeishuMentionId,
@@ -185,7 +173,7 @@ struct FeishuMention {
 }
 
 /// Mention ID.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct FeishuMentionId {
     #[serde(default)]
     open_id: Option<String>,
@@ -223,63 +211,6 @@ struct FeishuApiResponse<T> {
 struct TenantAccessTokenData {
     tenant_access_token: String,
     expire: i64,
-}
-
-/// A single message item returned by GET /open-apis/im/v1/messages.
-/// https://open.feishu.cn/document/server-docs/im-v1/message/list
-#[derive(Debug, Deserialize)]
-struct FeishuMessageItem {
-    /// Unique message ID (e.g. "om_xxx").
-    message_id: String,
-    /// Root message ID for threads.
-    #[serde(default)]
-    root_id: Option<String>,
-    /// Parent message ID.
-    #[serde(default)]
-    parent_id: Option<String>,
-    /// Message type: "text", "image", etc.
-    msg_type: String,
-    /// Creation time as Unix timestamp string (seconds).
-    create_time: String,
-    /// Chat ID.
-    chat_id: String,
-    /// Chat type: "p2p" or "group".
-    chat_type: String,
-    /// Sender info.
-    sender: FeishuMessageSender,
-    /// JSON-encoded message body.
-    body: FeishuMessageBody,
-    /// Mentions in the message.
-    #[serde(default)]
-    mentions: Option<Vec<FeishuMention>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FeishuMessageSender {
-    /// Sender open_id.
-    id: String,
-    /// Sender type: "user", "bot", etc.
-    id_type: String,
-    sender_type: String,
-    #[serde(default)]
-    tenant_key: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FeishuMessageBody {
-    /// JSON-encoded content (same format as FeishuMessage.content).
-    content: String,
-}
-
-/// Paginated message list response data.
-#[derive(Debug, Default, Deserialize)]
-struct MessageListData {
-    #[serde(default)]
-    items: Vec<FeishuMessageItem>,
-    #[serde(default)]
-    has_more: bool,
-    #[serde(default)]
-    page_token: Option<String>,
 }
 
 /// Send message request body.
@@ -325,22 +256,6 @@ struct FeishuConfig {
     /// Allowed user IDs (open_id) for DM pairing.
     #[serde(default)]
     allow_from: Option<Vec<String>>,
-
-    /// Public tunnel URL (injected by host). When set, webhook mode is used.
-    #[serde(default)]
-    tunnel_url: Option<String>,
-
-    /// Force polling mode even when tunnel_url is available.
-    #[serde(default)]
-    polling_enabled: bool,
-
-    /// Polling interval in milliseconds (default: 30 000).
-    #[serde(default = "default_poll_interval_ms")]
-    poll_interval_ms: u32,
-}
-
-fn default_poll_interval_ms() -> u32 {
-    30_000
 }
 
 fn default_api_base() -> String {
@@ -419,35 +334,6 @@ impl Guest for FeishuChannel {
             );
         }
 
-        // Determine mode: polling when explicitly enabled or no tunnel configured.
-        let webhook_mode = config.tunnel_url.is_some() && !config.polling_enabled;
-
-        let poll = if webhook_mode {
-            channel_host::log(
-                channel_host::LogLevel::Info,
-                "Webhook mode enabled (tunnel configured)",
-            );
-            None
-        } else {
-            let interval = config.poll_interval_ms.max(30_000);
-            channel_host::log(
-                channel_host::LogLevel::Info,
-                &format!("Polling mode enabled (interval {}ms)", interval),
-            );
-            // Seed last_time to now so we don't replay old messages on first boot.
-            if channel_host::workspace_read(POLL_LAST_TIME_PATH).is_none() {
-                let now_secs = channel_host::now_millis() / 1000;
-                let _ = channel_host::workspace_write(
-                    POLL_LAST_TIME_PATH,
-                    &now_secs.to_string(),
-                );
-            }
-            Some(PollConfig {
-                interval_ms: interval,
-                enabled: true,
-            })
-        };
-
         Ok(ChannelConfig {
             display_name: "Feishu".to_string(),
             http_endpoints: vec![HttpEndpointConfig {
@@ -455,7 +341,7 @@ impl Guest for FeishuChannel {
                 methods: vec!["POST".to_string()],
                 require_secret: false,
             }],
-            poll,
+            poll: None,
         })
     }
 
@@ -516,180 +402,8 @@ impl Guest for FeishuChannel {
     }
 
     fn on_poll() {
-        let api_base = channel_host::workspace_read(API_BASE_PATH)
-            .unwrap_or_else(|| "https://open.feishu.cn".to_string());
-
-        let token = match get_valid_token(&api_base) {
-            Ok(t) => t,
-            Err(e) => {
-                channel_host::log(
-                    channel_host::LogLevel::Error,
-                    &format!("on_poll: failed to get token: {}", e),
-                );
-                return;
-            }
-        };
-
-        // Read last-seen timestamp (Unix seconds). Default to 60s ago as safety net.
-        let last_time: u64 = channel_host::workspace_read(POLL_LAST_TIME_PATH)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or_else(|| channel_host::now_millis() / 1000 - 60);
-
-        // Load seen message IDs from the previous window to avoid duplicates.
-        let seen_ids: std::collections::HashSet<String> =
-            channel_host::workspace_read(POLL_SEEN_IDS_PATH)
-                .map(|s| s.split(',').map(|id| id.to_string()).collect())
-                .unwrap_or_default();
-
-        let now_secs = channel_host::now_millis() / 1000;
-
-        channel_host::log(
-            channel_host::LogLevel::Debug,
-            &format!("on_poll: fetching messages since {}", last_time),
-        );
-
-        // Fetch messages from the bot's p2p conversations.
-        // GET /open-apis/im/v1/messages?container_id_type=p2p&start_time=<unix_sec>&end_time=<unix_sec>&page_size=50
-        // This returns messages sent TO the bot across all p2p chats.
-        let mut new_max_time = last_time;
-        let mut new_seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-        let mut page_token: Option<String> = None;
-        let mut page = 0u32;
-        const MAX_PAGES: u32 = 5;
-
-        loop {
-            if page >= MAX_PAGES {
-                channel_host::log(
-                    channel_host::LogLevel::Warn,
-                    "on_poll: reached max page limit, stopping",
-                );
-                break;
-            }
-
-            let url = build_messages_url(&api_base, last_time, now_secs, page_token.as_deref());
-
-            let headers = serde_json::json!({
-                "Authorization": format!("Bearer {}", token),
-            });
-
-            let result = channel_host::http_request(
-                "GET",
-                &url,
-                &headers.to_string(),
-                None,
-                Some(15_000),
-            );
-
-            let response = match result {
-                Ok(r) => r,
-                Err(e) => {
-                    channel_host::log(
-                        channel_host::LogLevel::Error,
-                        &format!("on_poll: HTTP request failed: {}", e),
-                    );
-                    break;
-                }
-            };
-
-            if response.status != 200 {
-                let body_str = String::from_utf8_lossy(&response.body);
-                channel_host::log(
-                    channel_host::LogLevel::Error,
-                    &format!("on_poll: API returned {}: {}", response.status, body_str),
-                );
-                break;
-            }
-
-            let api_resp: FeishuApiResponse<MessageListData> =
-                match serde_json::from_slice(&response.body) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        channel_host::log(
-                            channel_host::LogLevel::Error,
-                            &format!("on_poll: failed to parse response: {}", e),
-                        );
-                        break;
-                    }
-                };
-
-            if api_resp.code != 0 {
-                channel_host::log(
-                    channel_host::LogLevel::Error,
-                    &format!(
-                        "on_poll: API error {}: {}",
-                        api_resp.code, api_resp.msg
-                    ),
-                );
-                break;
-            }
-
-            let data = match api_resp.data {
-                Some(d) => d,
-                None => break,
-            };
-
-            for item in &data.items {
-                // Skip bot's own messages (sender_type == "bot").
-                if item.sender.sender_type == "bot" {
-                    continue;
-                }
-
-                // Skip already-processed messages.
-                if seen_ids.contains(&item.message_id) {
-                    continue;
-                }
-                new_seen_ids.insert(item.message_id.clone());
-
-                // Track the newest create_time seen.
-                if let Ok(t) = item.create_time.parse::<u64>() {
-                    if t > new_max_time {
-                        new_max_time = t;
-                    }
-                }
-
-                // Build a synthetic FeishuMessage for handle_polled_message.
-                let msg = FeishuMessage {
-                    message_id: item.message_id.clone(),
-                    parent_id: item.parent_id.clone(),
-                    root_id: item.root_id.clone(),
-                    chat_id: item.chat_id.clone(),
-                    chat_type: Some(item.chat_type.clone()),
-                    message_type: item.msg_type.clone(),
-                    content: item.body.content.clone(),
-                    mentions: item.mentions.clone(),
-                };
-
-                handle_polled_message(&item.sender.id, &msg);
-            }
-
-            if !data.has_more {
-                break;
-            }
-            page_token = data.page_token;
-            page += 1;
-        }
-
-        // Persist updated state.
-        // Advance last_time by 1s to avoid re-fetching the boundary message.
-        let next_time = if new_max_time > last_time {
-            new_max_time + 1
-        } else {
-            // No new messages — advance window to now so we don't keep
-            // re-scanning the same empty range.
-            now_secs
-        };
-        let _ = channel_host::workspace_write(POLL_LAST_TIME_PATH, &next_time.to_string());
-
-        // Persist seen IDs (only keep the current window's IDs to bound size).
-        let ids_str = new_seen_ids
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(",");
-        let _ = channel_host::workspace_write(POLL_SEEN_IDS_PATH, &ids_str);
+        // Feishu uses webhooks, not polling.
     }
-
 
     fn on_respond(response: AgentResponse) -> Result<(), String> {
         let metadata: FeishuMessageMetadata = serde_json::from_str(&response.metadata_json)
@@ -715,115 +429,6 @@ impl Guest for FeishuChannel {
 // ============================================================================
 // Message Handling
 // ============================================================================
-
-/// Build the URL for GET /open-apis/im/v1/messages (polling).
-///
-/// Fetches p2p messages in the time window [start_time, end_time].
-fn build_messages_url(
-    api_base: &str,
-    start_time: u64,
-    end_time: u64,
-    page_token: Option<&str>,
-) -> String {
-    let mut url = format!(
-        "{}/open-apis/im/v1/messages?container_id_type=p2p&start_time={}&end_time={}&page_size=50&sort_type=ByCreateTimeAsc",
-        api_base, start_time, end_time
-    );
-    if let Some(token) = page_token {
-        url.push_str("&page_token=");
-        url.push_str(token);
-    }
-    url
-}
-
-/// Process a message fetched via polling (same logic as webhook, but sender
-/// info comes from the message item rather than an event envelope).
-fn handle_polled_message(sender_id: &str, message: &FeishuMessage) {
-    // Owner restriction check.
-    if let Some(owner_id) = channel_host::workspace_read(OWNER_ID_PATH) {
-        if !owner_id.is_empty() && sender_id != owner_id {
-            return;
-        }
-    }
-
-    // allow_from restriction.
-    if let Some(allow_from_json) = channel_host::workspace_read(ALLOW_FROM_PATH) {
-        if let Ok(allow_list) = serde_json::from_str::<Vec<String>>(&allow_from_json) {
-            if !allow_list.is_empty() && !allow_list.iter().any(|id| id == sender_id) {
-                return;
-            }
-        }
-    }
-
-    let chat_type = message.chat_type.as_deref().unwrap_or("unknown");
-
-    // DM pairing check.
-    if chat_type == "p2p" {
-        let dm_policy = channel_host::workspace_read(DM_POLICY_PATH)
-            .unwrap_or_else(|| "pairing".to_string());
-
-        if dm_policy == "pairing" {
-            match channel_host::pairing_is_allowed("feishu", sender_id, Some(sender_id)) {
-                Ok(true) => {}
-                Ok(false) => {
-                    let meta = serde_json::json!({
-                        "sender_id": sender_id,
-                        "chat_id": message.chat_id,
-                        "chat_type": chat_type,
-                    });
-                    if let Ok(result) = channel_host::pairing_upsert_request(
-                        "feishu",
-                        sender_id,
-                        &meta.to_string(),
-                    ) {
-                        if result.created {
-                            send_pairing_reply(
-                                &message.message_id,
-                                &message.chat_id,
-                                &result.code,
-                            );
-                        }
-                    }
-                    return;
-                }
-                Err(e) => {
-                    channel_host::log(
-                        channel_host::LogLevel::Error,
-                        &format!("Pairing check failed: {}", e),
-                    );
-                    return;
-                }
-            }
-        }
-    }
-
-    let text = extract_text_content(message);
-    if text.is_empty() {
-        return;
-    }
-
-    let metadata = FeishuMessageMetadata {
-        chat_id: message.chat_id.clone(),
-        message_id: message.message_id.clone(),
-        chat_type: chat_type.to_string(),
-    };
-    let metadata_json = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".to_string());
-
-    let thread_id = message
-        .root_id
-        .as_deref()
-        .or(message.parent_id.as_deref())
-        .map(|s| s.to_string());
-
-    channel_host::emit_message(&EmittedMessage {
-        user_id: sender_id.to_string(),
-        user_name: None,
-        content: text,
-        thread_id,
-        metadata_json,
-        attachments: vec![],
-    });
-}
 
 /// Handle an im.message.receive_v1 event.
 fn handle_message_event(event_data: &serde_json::Value) {
@@ -891,34 +496,15 @@ fn handle_message_event(event_data: &serde_json::Value) {
                         "chat_id": msg_event.message.chat_id,
                         "chat_type": chat_type,
                     });
-                    match channel_host::pairing_upsert_request(
+                    let _ = channel_host::pairing_upsert_request(
                         "feishu",
                         sender_id,
                         &meta.to_string(),
-                    ) {
-                        Ok(result) => {
-                            channel_host::log(
-                                channel_host::LogLevel::Info,
-                                &format!(
-                                    "Pairing request for user {} (chat {}): code {}",
-                                    sender_id, msg_event.message.chat_id, result.code
-                                ),
-                            );
-                            if result.created {
-                                send_pairing_reply(
-                                    &msg_event.message.message_id,
-                                    &msg_event.message.chat_id,
-                                    &result.code,
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            channel_host::log(
-                                channel_host::LogLevel::Error,
-                                &format!("Pairing upsert failed: {}", e),
-                            );
-                        }
-                    }
+                    );
+                    channel_host::log(
+                        channel_host::LogLevel::Info,
+                        &format!("Pairing request created for {}", sender_id),
+                    );
                     return;
                 }
                 Err(e) => {
@@ -998,26 +584,6 @@ fn extract_text_content(message: &FeishuMessage) -> String {
         }
         _ => String::new(),
     }
-}
-
-// ============================================================================
-// Pairing Reply
-// ============================================================================
-
-/// Send a pairing prompt to an unknown user who DM'd the bot.
-///
-/// Only called when `pairing_upsert_request` returns `created = true` so the
-/// user receives the message exactly once per new pairing request.
-fn send_pairing_reply(message_id: &str, chat_id: &str, code: &str) {
-    let text = format!(
-        "要与此机器人配对，请管理员执行：ironclaw pairing approve feishu {}",
-        code
-    );
-    // Best-effort: ignore errors (pairing reply is informational only).
-    let _ = send_reply(message_id, &text).or_else(|_| {
-        // Fallback: send as new message to the chat if reply fails.
-        send_message(chat_id, "open_id", &text)
-    });
 }
 
 // ============================================================================
@@ -1496,216 +1062,6 @@ mod tests {
         assert_eq!(event.challenge.as_deref(), Some("ajls384kdjx98XX"));
         assert!(event.header.is_none());
     }
-
-    // =========================================================================
-    // Polling config fields
-    // =========================================================================
-
-    #[test]
-    fn test_config_polling_defaults() {
-        let json = r#"{}"#;
-        let config: FeishuConfig = serde_json::from_str(json).unwrap();
-        assert!(!config.polling_enabled);
-        assert_eq!(config.poll_interval_ms, 30_000);
-        assert!(config.tunnel_url.is_none());
-    }
-
-    #[test]
-    fn test_config_polling_enabled() {
-        let json = r#"{"polling_enabled": true, "poll_interval_ms": 60000}"#;
-        let config: FeishuConfig = serde_json::from_str(json).unwrap();
-        assert!(config.polling_enabled);
-        assert_eq!(config.poll_interval_ms, 60_000);
-    }
-
-    #[test]
-    fn test_config_tunnel_url() {
-        let json = r#"{"tunnel_url": "https://abc.ngrok.io"}"#;
-        let config: FeishuConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.tunnel_url.as_deref(), Some("https://abc.ngrok.io"));
-        // tunnel_url present + polling_enabled false => webhook mode
-        assert!(!config.polling_enabled);
-    }
-
-    // =========================================================================
-    // build_messages_url
-    // =========================================================================
-
-    #[test]
-    fn test_build_messages_url_no_page_token() {
-        let url = build_messages_url("https://open.feishu.cn", 1700000000, 1700000060, None);
-        assert!(url.starts_with("https://open.feishu.cn/open-apis/im/v1/messages"));
-        assert!(url.contains("container_id_type=p2p"));
-        assert!(url.contains("start_time=1700000000"));
-        assert!(url.contains("end_time=1700000060"));
-        assert!(url.contains("sort_type=ByCreateTimeAsc"));
-        assert!(!url.contains("page_token"));
-    }
-
-    #[test]
-    fn test_build_messages_url_with_page_token() {
-        let url = build_messages_url(
-            "https://open.feishu.cn",
-            1700000000,
-            1700000060,
-            Some("tok_abc"),
-        );
-        assert!(url.contains("page_token=tok_abc"));
-    }
-
-    #[test]
-    fn test_build_messages_url_lark_base() {
-        let url = build_messages_url("https://open.larksuite.com", 0, 1, None);
-        assert!(url.starts_with("https://open.larksuite.com/open-apis/im/v1/messages"));
-    }
-
-    #[test]
-    fn test_build_messages_url_strips_trailing_slash() {
-        // api_base is stored without trailing slash (trimmed in on_start),
-        // but build_messages_url itself should also work correctly.
-        let url = build_messages_url("https://open.feishu.cn", 100, 200, None);
-        // Should not produce double slash
-        assert!(!url.contains("//open-apis"));
-    }
-
-    // =========================================================================
-    // FeishuMessageItem / MessageListData deserialization
-    // =========================================================================
-
-    #[test]
-    fn test_message_list_data_empty() {
-        let json = r#"{"items":[],"has_more":false}"#;
-        let data: MessageListData = serde_json::from_str(json).unwrap();
-        assert!(data.items.is_empty());
-        assert!(!data.has_more);
-        assert!(data.page_token.is_none());
-    }
-
-    #[test]
-    fn test_message_list_data_default() {
-        // All fields optional via #[serde(default)]
-        let data: MessageListData = serde_json::from_str(r#"{}"#).unwrap();
-        assert!(data.items.is_empty());
-        assert!(!data.has_more);
-    }
-
-    #[test]
-    fn test_message_list_data_with_page_token() {
-        let json = r#"{"items":[],"has_more":true,"page_token":"next_page_xyz"}"#;
-        let data: MessageListData = serde_json::from_str(json).unwrap();
-        assert!(data.has_more);
-        assert_eq!(data.page_token.as_deref(), Some("next_page_xyz"));
-    }
-
-    #[test]
-    fn test_feishu_message_item_deserialize() {
-        let json = r#"{
-            "message_id": "om_abc123",
-            "msg_type": "text",
-            "create_time": "1700000000",
-            "chat_id": "oc_chat1",
-            "chat_type": "p2p",
-            "sender": {
-                "id": "ou_user1",
-                "id_type": "open_id",
-                "sender_type": "user"
-            },
-            "body": {
-                "content": "{\"text\":\"hello\"}"
-            }
-        }"#;
-        let item: FeishuMessageItem = serde_json::from_str(json).unwrap();
-        assert_eq!(item.message_id, "om_abc123");
-        assert_eq!(item.msg_type, "text");
-        assert_eq!(item.create_time, "1700000000");
-        assert_eq!(item.chat_id, "oc_chat1");
-        assert_eq!(item.chat_type, "p2p");
-        assert_eq!(item.sender.id, "ou_user1");
-        assert_eq!(item.sender.sender_type, "user");
-        assert_eq!(item.body.content, r#"{"text":"hello"}"#);
-        assert!(item.root_id.is_none());
-        assert!(item.parent_id.is_none());
-        assert!(item.mentions.is_none());
-    }
-
-    #[test]
-    fn test_feishu_message_item_bot_sender() {
-        // Verify sender_type field is correctly parsed for bot messages
-        let json = r#"{
-            "message_id": "om_bot1",
-            "msg_type": "text",
-            "create_time": "1700000001",
-            "chat_id": "oc_chat1",
-            "chat_type": "p2p",
-            "sender": {
-                "id": "cli_bot",
-                "id_type": "app_id",
-                "sender_type": "bot"
-            },
-            "body": {"content": "{\"text\":\"I am a bot\"}"}
-        }"#;
-        let item: FeishuMessageItem = serde_json::from_str(json).unwrap();
-        assert_eq!(item.sender.sender_type, "bot");
-    }
-
-    #[test]
-    fn test_feishu_message_item_with_thread_ids() {
-        let json = r#"{
-            "message_id": "om_reply",
-            "root_id": "om_root",
-            "parent_id": "om_parent",
-            "msg_type": "text",
-            "create_time": "1700000002",
-            "chat_id": "oc_chat1",
-            "chat_type": "p2p",
-            "sender": {"id": "ou_u1", "id_type": "open_id", "sender_type": "user"},
-            "body": {"content": "{\"text\":\"reply\"}"}
-        }"#;
-        let item: FeishuMessageItem = serde_json::from_str(json).unwrap();
-        assert_eq!(item.root_id.as_deref(), Some("om_root"));
-        assert_eq!(item.parent_id.as_deref(), Some("om_parent"));
-    }
-
-    #[test]
-    fn test_poll_api_response_wrapping_message_list() {
-        // Simulate the full API response shape returned by GET /im/v1/messages
-        let json = r#"{
-            "code": 0,
-            "msg": "success",
-            "data": {
-                "items": [
-                    {
-                        "message_id": "om_001",
-                        "msg_type": "text",
-                        "create_time": "1700000010",
-                        "chat_id": "oc_c1",
-                        "chat_type": "p2p",
-                        "sender": {"id": "ou_u1", "id_type": "open_id", "sender_type": "user"},
-                        "body": {"content": "{\"text\":\"hi\"}"}
-                    }
-                ],
-                "has_more": false
-            }
-        }"#;
-        let resp: FeishuApiResponse<MessageListData> = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.code, 0);
-        let data = resp.data.unwrap();
-        assert_eq!(data.items.len(), 1);
-        assert_eq!(data.items[0].message_id, "om_001");
-        assert!(!data.has_more);
-    }
-
-    #[test]
-    fn test_poll_api_response_error() {
-        let json = r#"{"code": 99991401, "msg": "unauthorized"}"#;
-        let resp: FeishuApiResponse<MessageListData> = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.code, 99991401);
-        assert!(resp.data.is_none());
-    }
-
-    // =========================================================================
-    // FeishuEvent deserialization
-    // =========================================================================
 
     #[test]
     fn test_parse_message_receive_event() {
