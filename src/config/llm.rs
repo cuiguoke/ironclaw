@@ -221,6 +221,7 @@ impl LlmConfig {
             api_key_required,
             base_url_required,
             unsupported_params,
+            disable_strict_schema,
         ) = if let Some(def) = def {
             (
                 def.id.as_str(),
@@ -234,6 +235,7 @@ impl LlmConfig {
                 def.api_key_required,
                 def.base_url_required,
                 def.unsupported_params.clone(),
+                def.disable_strict_schema,
             )
         } else {
             // Absolute fallback: treat as generic openai_completions
@@ -249,6 +251,7 @@ impl LlmConfig {
                 false,
                 true,
                 Vec::new(),
+                false,
             )
         };
 
@@ -384,6 +387,7 @@ impl LlmConfig {
             auth_path: codex_auth_path,
             cache_retention,
             unsupported_params,
+            disable_strict_schema,
         })
     }
 }

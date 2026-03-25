@@ -244,17 +244,19 @@
       "bigmodel"
     ],
     "protocol": "open_ai_completions",
-    "default_base_url": "https://api.z.ai/api/paas/v4",
+    "default_base_url": "https://open.bigmodel.cn/api/paas/v4",
     "api_key_env": "ZAI_API_KEY",
     "api_key_required": true,
     "model_env": "ZAI_MODEL",
     "default_model": "glm-5",
-    "description": "Z.AI GLM inference API",
+    "description": "智谱 AI GLM inference API (open.bigmodel.cn)",
+    "unsupported_params": ["stop_sequences"],
+    "disable_strict_schema": true,
     "setup": {
       "kind": "api_key",
       "secret_name": "llm_zai_api_key",
-      "key_url": "https://z.ai/manage-apikey/apikey-list",
-      "display_name": "Z.AI",
+      "key_url": "https://open.bigmodel.cn/usercenter/apikeys",
+      "display_name": "智谱 AI (BigModel)",
       "can_list_models": false
     }
   },

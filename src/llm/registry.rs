@@ -185,6 +185,11 @@ pub struct ProviderDefinition {
     /// Invalid parameter names cause a deserialization error.
     #[serde(default, deserialize_with = "unsupported_params_de::deserialize")]
     pub unsupported_params: Vec<String>,
+    /// When true, use `BasicOpenAiProvider` (direct HTTP) instead of rig-core.
+    /// Bypasses content array serialization and strict JSON Schema normalization.
+    /// Use for providers like 智谱 AI domestic API that only support basic OpenAI format.
+    #[serde(default)]
+    pub disable_strict_schema: bool,
 }
 
 /// Registry of known LLM providers.

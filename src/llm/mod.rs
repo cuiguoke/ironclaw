@@ -9,6 +9,7 @@
 //! - **AWS Bedrock**: Native Converse API via aws-sdk-bedrockruntime
 
 mod anthropic_oauth;
+mod basic_openai;
 #[cfg(feature = "bedrock")]
 mod bedrock;
 pub mod circuit_breaker;
@@ -150,7 +151,9 @@ fn create_registry_provider(
     }
 
     match config.protocol {
-        ProviderProtocol::OpenAiCompletions => create_openai_compat_from_registry(config),
+        ProviderProtocol::OpenAiCompletions => {
+            create_openai_compat_from_registry(config, request_timeout_secs)
+        }
         ProviderProtocol::Anthropic => create_anthropic_from_registry(config),
         ProviderProtocol::Ollama => create_ollama_from_registry(config),
     }
@@ -207,7 +210,42 @@ async fn create_bedrock_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvid
 
 fn create_openai_compat_from_registry(
     config: &RegistryProviderConfig,
+    request_timeout_secs: u64,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
+    // For providers that don't support advanced OpenAI schema features (e.g. 智谱 AI domestic),
+    // use the direct HTTP provider that bypasses rig-core serialization entirely.
+    // This avoids content arrays, anyOf/oneOf/allOf, and other incompatibilities.
+    if config.disable_strict_schema {
+        let api_key = config
+            .api_key
+            .as_ref()
+            .map(|k| k.expose_secret().to_string())
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    provider = %config.provider_id,
+                    "No API key configured. Requests will likely fail with 401."
+                );
+                "no-key".to_string()
+            });
+
+        tracing::debug!(
+            provider = %config.provider_id,
+            model = %config.model,
+            base_url = %config.base_url,
+            "Using basic OpenAI-compatible provider (direct HTTP, bypasses rig-core)"
+        );
+
+        let provider = basic_openai::BasicOpenAiProvider::new(
+            &config.base_url,
+            api_key,
+            &config.model,
+            config.unsupported_params.clone(),
+            config.extra_headers.clone(),
+            std::time::Duration::from_secs(request_timeout_secs),
+        )?;
+        return Ok(Arc::new(provider));
+    }
+
     use rig::providers::openai;
 
     let mut extra_headers = reqwest::header::HeaderMap::new();
