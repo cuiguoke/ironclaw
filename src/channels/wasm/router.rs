@@ -42,6 +42,8 @@ pub struct WasmChannelRouter {
     secrets: RwLock<HashMap<String, String>>,
     /// Webhook secret header names by channel name (e.g., "X-Telegram-Bot-Api-Secret-Token").
     secret_headers: RwLock<HashMap<String, String>>,
+    /// Whether secret validation is required by channel name.
+    require_secrets: RwLock<HashMap<String, bool>>,
     /// Ed25519 public keys for signature verification by channel name (hex-encoded).
     signature_keys: RwLock<HashMap<String, String>>,
     /// HMAC-SHA256 signing secrets for signature verification by channel name (Slack-style).
@@ -56,6 +58,7 @@ impl WasmChannelRouter {
             path_to_channel: RwLock::new(HashMap::new()),
             secrets: RwLock::new(HashMap::new()),
             secret_headers: RwLock::new(HashMap::new()),
+            require_secrets: RwLock::new(HashMap::new()),
             signature_keys: RwLock::new(HashMap::new()),
             hmac_secrets: RwLock::new(HashMap::new()),
         }
@@ -81,14 +84,17 @@ impl WasmChannelRouter {
         // Store the channel
         self.channels.write().await.insert(name.clone(), channel);
 
-        // Register path mappings
+        // Register path mappings and store require_secret flag
         let mut path_map = self.path_to_channel.write().await;
+        let mut require_secrets = self.require_secrets.write().await;
         for endpoint in endpoints {
             path_map.insert(endpoint.path.clone(), name.clone());
+            require_secrets.insert(name.clone(), endpoint.require_secret);
             tracing::info!(
                 channel = %name,
                 path = %endpoint.path,
                 methods = ?endpoint.methods,
+                require_secret = endpoint.require_secret,
                 "Registered WASM channel HTTP endpoint"
             );
         }
@@ -136,6 +142,7 @@ impl WasmChannelRouter {
         self.channels.write().await.remove(channel_name);
         self.secrets.write().await.remove(channel_name);
         self.secret_headers.write().await.remove(channel_name);
+        self.require_secrets.write().await.remove(channel_name);
         self.signature_keys.write().await.remove(channel_name);
         self.hmac_secrets.write().await.remove(channel_name);
 
@@ -170,7 +177,12 @@ impl WasmChannelRouter {
 
     /// Check if a channel requires a secret.
     pub async fn requires_secret(&self, channel_name: &str) -> bool {
-        self.secrets.read().await.contains_key(channel_name)
+        self.require_secrets
+            .read()
+            .await
+            .get(channel_name)
+            .copied()
+            .unwrap_or(false)
     }
 
     /// List all registered channels.
@@ -1002,6 +1014,49 @@ mod tests {
         // Should not have stored anything
         let stored = router.get_signature_key("discord").await;
         assert!(stored.is_none(), "Invalid key should not be stored");
+    }
+
+    #[tokio::test]
+    async fn test_managed_by_host_false_skips_secret_validation() {
+        let router = WasmChannelRouter::new();
+        let channel = create_test_channel("feishu");
+
+        // Register with require_secret: false (managed_by_host: false)
+        let endpoints = vec![RegisteredEndpoint {
+            channel_name: "feishu".to_string(),
+            path: "/webhook/feishu".to_string(),
+            methods: vec!["POST".to_string()],
+            require_secret: false,
+        }];
+
+        // Even though we provide a secret, it should not be required
+        router
+            .register(channel, endpoints, Some("token123".to_string()), None)
+            .await;
+
+        // requires_secret should return false because require_secret flag is false
+        assert!(!router.requires_secret("feishu").await);
+    }
+
+    #[tokio::test]
+    async fn test_managed_by_host_true_requires_secret_validation() {
+        let router = WasmChannelRouter::new();
+        let channel = create_test_channel("telegram");
+
+        // Register with require_secret: true (managed_by_host: true)
+        let endpoints = vec![RegisteredEndpoint {
+            channel_name: "telegram".to_string(),
+            path: "/webhook/telegram".to_string(),
+            methods: vec!["POST".to_string()],
+            require_secret: true,
+        }];
+
+        router
+            .register(channel, endpoints, Some("token456".to_string()), None)
+            .await;
+
+        // requires_secret should return true because require_secret flag is true
+        assert!(router.requires_secret("telegram").await);
     }
 
     // ── Webhook Handler Integration Tests ─────────────────────────────
