@@ -1,0 +1,49 @@
+{
+    "version": "0.1.0",
+    "wit_version": "0.3.0",
+    "type": "channel",
+    "name": "gmail",
+    "description": "Gmail push notification channel via Google Pub/Sub. Watch subscription managed externally.",
+    "capabilities": {
+        "channel": {
+            "allowed_paths": [
+                "/webhook/gmail"
+            ],
+            "allow_polling": false,
+            "workspace_prefix": "channels/gmail/",
+            "emit_rate_limit": {
+                "messages_per_minute": 60,
+                "messages_per_hour": 500
+            }
+        }
+    },
+    "config": {
+        "pubsub_subscription": null,
+        "user_id": "default",
+        "summary_language": "Chinese"
+    },
+    "config_schema": {
+        "type": "object",
+        "properties": {
+            "pubsub_subscription": {
+                "type": [
+                    "string",
+                    "null"
+                ],
+                "description": "Expected Pub/Sub subscription name for source verification (optional)"
+            },
+            "user_id": {
+                "type": [
+                    "string",
+                    "null"
+                ],
+                "description": "IronClaw user_id for all emitted messages. When set, all notifications use this value regardless of email address (optional)"
+            },
+            "summary_language": {
+                "type": "string",
+                "description": "Language for email summarization (e.g., 'English', 'Chinese', 'Spanish'). Default: 'Chinese'",
+                "default": "Chinese"
+            }
+        }
+    }
+}

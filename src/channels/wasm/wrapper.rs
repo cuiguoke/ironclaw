@@ -1718,6 +1718,9 @@ impl WasmChannel {
         let channel_name = self.name.clone();
         match result {
             Ok(Ok((response, mut host_state))) => {
+                // Drain guest logs so WASM channel log() calls are visible.
+                let _ = drain_guest_logs(&channel_name, "on_http_request", &mut host_state);
+
                 // Process emitted messages
                 let emitted = host_state.take_emitted_messages();
                 self.process_emitted_messages(emitted).await?;

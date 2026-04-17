@@ -23,6 +23,7 @@ const KNOWN_CHANNELS: &[(&str, &str)] = &[
     ("discord", "discord_channel"),
     ("whatsapp", "whatsapp_channel"),
     ("feishu", "feishu_channel"),
+    ("gmail", "gmail_channel"),
 ];
 
 /// Names of known channels that can be installed.
@@ -149,6 +150,8 @@ mod tests {
         assert!(names.contains(&"slack"));
         assert!(names.contains(&"discord"));
         assert!(names.contains(&"whatsapp"));
+        assert!(names.contains(&"feishu"));
+        assert!(names.contains(&"gmail"));
     }
 
     #[test]
